@@ -8,37 +8,40 @@ app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
 // -----------------------------------------------------
-// 🔒 FORCE JSON ONLY (GLOBAL SAFETY LOCK)
+// 🔒 ABSOLUTE JSON LOCK (NO HTML EVER)
 // -----------------------------------------------------
 app.use((req, res, next) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("X-API-VERSION", "locked-v2");
+  res.setHeader("X-PROTOCOL", "ecotrade-scraper-v3");
   next();
 });
 
 // -----------------------------------------------------
-// HEALTH
+// HEALTH CHECK
 // -----------------------------------------------------
 app.get("/health", (req, res) => {
-  return res.status(200).json({
+  res.status(200).json({
     success: true,
     service: "catalytic-intelligence-level3",
     status: "online"
   });
 });
 
+// -----------------------------------------------------
+// DEBUG
+// -----------------------------------------------------
 app.get("/debug", (req, res) => {
-  return res.status(200).json({
+  res.status(200).json({
     success: true,
-    version: "locked-v2",
+    version: "v3-locked-contract",
     timestamp: Date.now()
   });
 });
 
 // -----------------------------------------------------
-// BROWSER SINGLETON (STABLE)
+// BROWSER SINGLETON
 // -----------------------------------------------------
-let browserInstance;
+let browserInstance = null;
 
 async function getBrowser() {
   if (!browserInstance) {
@@ -67,7 +70,7 @@ async function safeGoto(page, url) {
 }
 
 // -----------------------------------------------------
-// CORE SCRAPER (HARDENED)
+// SCRAPER CORE
 // -----------------------------------------------------
 async function scrape(url) {
   let browser;
@@ -116,7 +119,7 @@ async function scrape(url) {
     await context.close();
 
     // -------------------------------------------------
-    // STRICT RESPONSE FORMAT (NO VARIATION EVER)
+    // STRICT RESPONSE CONTRACT (FINAL)
     // -------------------------------------------------
     return {
       success: true,
@@ -124,7 +127,8 @@ async function scrape(url) {
       data,
       meta: {
         source: "ecotrade",
-        version: "locked-v2"
+        version: "v3-locked-contract",
+        url
       }
     };
 
@@ -132,8 +136,8 @@ async function scrape(url) {
     return {
       success: false,
       error: {
-        message: err.message,
-        code: "SCRAPER_FAILED"
+        code: "SCRAPER_FAILED",
+        message: err.message
       },
       data: null,
       meta: {
@@ -144,7 +148,7 @@ async function scrape(url) {
 }
 
 // -----------------------------------------------------
-// API ROUTE (100% SAFE CONTRACT)
+// API ROUTE (FINAL SAFE CONTRACT)
 // -----------------------------------------------------
 app.post("/scrape-product", async (req, res) => {
   try {
@@ -153,7 +157,10 @@ app.post("/scrape-product", async (req, res) => {
     if (!url) {
       return res.status(400).json({
         success: false,
-        error: { message: "URL_REQUIRED", code: "VALIDATION_ERROR" },
+        error: {
+          code: "URL_REQUIRED",
+          message: "URL is required"
+        },
         data: null
       });
     }
@@ -165,7 +172,10 @@ app.post("/scrape-product", async (req, res) => {
   } catch (err) {
     return res.status(500).json({
       success: false,
-      error: { message: err.message, code: "FATAL_ERROR" },
+      error: {
+        code: "FATAL_ERROR",
+        message: err.message
+      },
       data: null
     });
   }
@@ -177,7 +187,10 @@ app.post("/scrape-product", async (req, res) => {
 app.use((err, req, res, next) => {
   return res.status(500).json({
     success: false,
-    error: { message: err.message, code: "UNHANDLED_EXCEPTION" },
+    error: {
+      code: "UNHANDLED_EXCEPTION",
+      message: err.message
+    },
     data: null
   });
 });
@@ -188,5 +201,5 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 LOCKED API v2 running on port ${PORT}`);
+  console.log(`🚀 FINAL LOCKED SCRAPER v3 running on port ${PORT}`);
 });
