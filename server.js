@@ -6,7 +6,7 @@ const app = express();
 app.use(express.json({ limit: "10mb" }));
 
 // -------------------------------------
-// FORCE JSON RESPONSE HEADERS
+// FORCE JSON OUTPUT ONLY
 // -------------------------------------
 app.use((req, res, next) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -14,7 +14,7 @@ app.use((req, res, next) => {
 });
 
 // -------------------------------------
-// GLOBAL HTML BLOCKER (CRITICAL FIX)
+// GLOBAL HTML BLOCKER
 // -------------------------------------
 app.use((req, res, next) => {
   const originalSend = res.send;
@@ -24,8 +24,8 @@ app.use((req, res, next) => {
       if (typeof body === "string" && body.trim().startsWith("<!DOCTYPE")) {
         return originalSend.call(this, JSON.stringify({
           ok: false,
-          error: "HTML blocked at gateway layer",
-          hint: "invalid route or crash response"
+          error: "HTML response blocked",
+          hint: "invalid route or upstream crash"
         }));
       }
     } catch {}
@@ -53,12 +53,12 @@ app.get("/health", (req, res) => {
 app.get("/debug", (req, res) => {
   res.json({
     ok: true,
-    version: "locked-production-v4"
+    version: "v5-timeout-fixed"
   });
 });
 
 // -------------------------------------
-// CORE SCRAPER
+// SCRAPER CORE
 // -------------------------------------
 async function scrape(url) {
   let browser;
@@ -76,12 +76,24 @@ async function scrape(url) {
     const context = await browser.newContext();
     const page = await context.newPage();
 
-    await page.goto(url, {
-      waitUntil: "networkidle",
-      timeout: 60000
-    });
+    // -------------------------------------
+    // FIXED NAVIGATION (NO NETWORKIDLE)
+    // -------------------------------------
+    try {
+      await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: 45000
+      });
+    } catch (err) {
+      // fallback strategy (important for EcoTrade)
+      await page.goto(url, {
+        waitUntil: "load",
+        timeout: 45000
+      });
+    }
 
-    await page.waitForTimeout(5000);
+    // IMPORTANT: hydration buffer
+    await page.waitForTimeout(4000);
 
     // -------------------------------------
     // SEARCH MODE
@@ -141,7 +153,7 @@ async function scrape(url) {
       let structured = false;
 
       try {
-        structured = !!Array.from(document.scripts).find(s =>
+        structured = Array.from(document.scripts).some(s =>
           (s.innerText || "").includes("sku") ||
           (s.innerText || "").includes("product")
         );
@@ -176,26 +188,25 @@ async function scrape(url) {
 }
 
 // -------------------------------------
-// API ENDPOINT (HARDENED)
+// API ENDPOINT
 // -------------------------------------
 app.post("/scrape-product", async (req, res) => {
   try {
     const url = req.body?.url;
 
-    if (!url || typeof url !== "string") {
+    if (!url) {
       return res.json({
         ok: false,
-        error: "Missing or invalid URL"
+        error: "Missing URL"
       });
     }
 
     const result = await scrape(url);
 
-    // FINAL SAFETY CHECK (NO HTML EVER)
     if (!result || typeof result !== "object") {
       return res.json({
         ok: false,
-        error: "Invalid scraper response"
+        error: "Invalid response from scraper"
       });
     }
 
@@ -210,10 +221,10 @@ app.post("/scrape-product", async (req, res) => {
 });
 
 // -------------------------------------
-// START
+// START SERVER
 // -------------------------------------
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log("Locked Catalytic API running on port", PORT);
+  console.log("Catalytic Intelligence API running on port", PORT);
 });
