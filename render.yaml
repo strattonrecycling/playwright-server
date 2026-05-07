@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: playwright-server
+    env: node
+    buildCommand: npm install && npx playwright install --with-deps chromium
+    startCommand: node server.js
