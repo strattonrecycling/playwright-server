@@ -5,21 +5,19 @@ const { chromium } = require("playwright");
 const app = express();
 
 app.use(cors());
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "5mb" }));
 
-// ---------------------------------------------------
-// ALWAYS JSON SAFETY
-// ---------------------------------------------------
-
+// -----------------------------------------------------
+// FORCE JSON ONLY (CRITICAL FIX FOR "<!DOCTYPE")
+// -----------------------------------------------------
 app.use((req, res, next) => {
   res.setHeader("Content-Type", "application/json");
   next();
 });
 
-// ---------------------------------------------------
+// -----------------------------------------------------
 // HEALTH
-// ---------------------------------------------------
-
+// -----------------------------------------------------
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
@@ -31,139 +29,126 @@ app.get("/health", (req, res) => {
 app.get("/debug", (req, res) => {
   res.json({
     ok: true,
-    version: "v11-hydration-fixed",
+    version: "v12-hardened",
     timestamp: Date.now()
   });
 });
 
-// ---------------------------------------------------
-// BROWSER
-// ---------------------------------------------------
-
+// -----------------------------------------------------
+// BROWSER (STABLE CONFIG)
+// -----------------------------------------------------
 async function createBrowser() {
   return await chromium.launch({
     headless: true,
+    ignoreHTTPSErrors: true,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage"
+      "--disable-dev-shm-usage",
+      "--disable-blink-features=AutomationControlled"
     ]
   });
 }
 
-// ---------------------------------------------------
-// PRODUCT SCRAPER (HYDRATION FIXED)
-// ---------------------------------------------------
-
-async function scrapeProduct(url) {
+// -----------------------------------------------------
+// CORE SCRAPER
+// -----------------------------------------------------
+async function scrape(url) {
   let browser;
 
   try {
     browser = await createBrowser();
-
     const page = await browser.newPage();
 
-    await page.setViewportSize({ width: 1366, height: 900 });
+    // realistic headers
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    );
+
+    await page.setExtraHTTPHeaders({
+      "accept-language": "en-US,en;q=0.9"
+    });
+
+    await page.setViewportSize({ width: 1366, height: 768 });
 
     await page.goto(url, {
       waitUntil: "domcontentloaded",
       timeout: 60000
     });
 
-    // 🔥 HYDRATION STABILISATION DELAY
-    await page.waitForTimeout(5000);
+    // smarter hydration wait (no long freezes)
+    await page.waitForTimeout(2500);
 
     const data = await page.evaluate(() => {
 
-      const clean = (t = "") =>
-        t.replace(/\s+/g, " ").trim();
+      const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
 
-      // ---------------------------------------
-      // TITLE (FORCED VALIDATION)
-      // ---------------------------------------
+      // ---------------------------
+      // TITLE FIX (ROBUST)
+      // ---------------------------
+      const title =
+        clean(document.querySelector("h1")?.innerText) ||
+        clean(document.querySelector("[class*='title']")?.innerText) ||
+        clean(document.title);
 
-      const h1 = document.querySelector("h1");
-      const title = clean(h1?.innerText || "");
-
-      const bodyText = document.body.innerText;
-
-      const isValid =
-        title &&
-        title.length > 5 &&
-        /BMW|CATALYTIC|CONVERTER|DPF|OEM/i.test(bodyText);
-
-      // ---------------------------------------
-      // PRODUCT BLOCK SELECTION (FIXED)
-      // ---------------------------------------
-
+      // ---------------------------
+      // MAIN CONTAINER
+      // ---------------------------
       const container =
-        document.querySelector(".product") ||
-        document.querySelector("[class*='product']") ||
         document.querySelector("main") ||
         document.body;
 
       const text = clean(container.innerText);
 
-      // ---------------------------------------
-      // REFERENCES (OEM NUMBERS ONLY)
-      // ---------------------------------------
-
+      // ---------------------------
+      // OEM REFERENCES
+      // ---------------------------
       const references = [
-        ...new Set(
-          (text.match(/\b\d{6,12}\b/g) || [])
-        )
+        ...new Set(text.match(/\b\d{6,14}\b/g) || [])
       ].slice(0, 30);
 
-      // ---------------------------------------
-      // PRICE HINTS
-      // ---------------------------------------
-
+      // ---------------------------
+      // PRICES
+      // ---------------------------
       const priceHints = [
-        ...new Set(
-          (text.match(/(\$\s?\d[\d\s,.]*)|(€\s?\d[\d\s,.]*)|(R\s?\d[\d\s,.]*)/g) || [])
-        )
+        ...new Set(text.match(/(\$\s?\d[\d\s,.]*)|(€\s?\d[\d\s,.]*)|(R\s?\d[\d\s,.]*)/g) || [])
       ].slice(0, 10);
 
-      // ---------------------------------------
-      // PRODUCT DETAILS
-      // ---------------------------------------
-
-      const get = (label) => {
-        const regex = new RegExp(
-          `${label}\\s+(.*?)(?=Brand|Maker|Product Type|Years|Car Models|Ref|Share|$)`,
-          "i"
-        );
-        const m = text.match(regex);
-        return m ? clean(m[1]).slice(0, 300) : null;
+      // ---------------------------
+      // PRODUCT DETAILS EXTRACTION
+      // ---------------------------
+      const pick = (label) => {
+        const r = new RegExp(`${label}\\s+(.*?)(?=Brand|Maker|Ref|Years|Car Models|$)`, "i");
+        const m = text.match(r);
+        return m ? clean(m[1]) : null;
       };
 
       const productDetails = {
-        brand: get("Brand"),
-        maker: get("Maker"),
-        productType: get("Product Type"),
-        years: get("Years"),
-        carModels: get("Car Models"),
-        ref: get("Ref")
+        brand: pick("Brand"),
+        maker: pick("Maker"),
+        productType: pick("Product Type"),
+        years: pick("Years"),
+        carModels: pick("Car Models"),
+        ref: pick("Ref")
       };
 
-      // ---------------------------------------
-      // IMAGES (FILTERED CLEAN)
-      // ---------------------------------------
-
+      // ---------------------------
+      // IMAGES (FILTERED)
+      // ---------------------------
       const images = Array.from(document.images)
         .map(i => i.src)
         .filter(src =>
           src &&
-          src.includes("uploads") &&
+          src.includes("ecotradegroup") &&
           !src.includes("flag") &&
-          !src.includes("badge") &&
-          !src.includes("logo")
+          !src.includes("logo") &&
+          !src.includes("badge")
         )
         .slice(0, 10);
 
       return {
-        type: "product",
-        title: isValid ? title : "INVALID_PRODUCT_CAPTURED",
+        type: url.includes("/product/") ? "product" : "search",
+        title,
         references,
         priceHints,
         productDetails,
@@ -172,7 +157,6 @@ async function scrapeProduct(url) {
       };
     });
 
-    await page.close();
     await browser.close();
 
     return {
@@ -181,10 +165,7 @@ async function scrapeProduct(url) {
     };
 
   } catch (err) {
-
-    if (browser) {
-      try { await browser.close(); } catch {}
-    }
+    if (browser) await browser.close().catch(() => {});
 
     return {
       ok: false,
@@ -193,52 +174,51 @@ async function scrapeProduct(url) {
   }
 }
 
-// ---------------------------------------------------
+// -----------------------------------------------------
 // ROUTE
-// ---------------------------------------------------
-
+// -----------------------------------------------------
 app.post("/scrape-product", async (req, res) => {
   try {
     const { url } = req.body || {};
 
     if (!url) {
-      return res.status(400).json({
+      return res.json({
         ok: false,
-        error: "URL is required"
+        error: "URL_REQUIRED"
       });
     }
 
-    const result = await scrapeProduct(url);
+    const result = await scrape(url);
 
     return res.json(result);
 
   } catch (err) {
-    return res.status(500).json({
+    return res.json({
       ok: false,
-      error: "Fatal server error",
-      details: err.message
+      error: "FATAL_SERVER_ERROR",
+      message: err.message
     });
   }
 });
 
-// ---------------------------------------------------
-// GLOBAL SAFETY
-// ---------------------------------------------------
-
+// -----------------------------------------------------
+// GLOBAL SAFETY NET (NO HTML EVER)
+// -----------------------------------------------------
 app.use((err, req, res, next) => {
-  res.status(500).json({
+  console.error(err);
+
+  res.json({
     ok: false,
-    error: "Unhandled server crash",
-    details: err.message
+    error: "UNHANDLED_EXCEPTION",
+    message: err.message
   });
 });
 
-// ---------------------------------------------------
+// -----------------------------------------------------
 // START
-// ---------------------------------------------------
-
+// -----------------------------------------------------
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 v11 hydration-fixed scraper running on port ${PORT}`);
+  console.log(`🚀 v12 hardened scraper running on port ${PORT}`);
 });
