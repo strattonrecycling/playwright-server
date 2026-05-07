@@ -1,21 +1,16 @@
 const express = require("express");
+const cors = require("cors");
 const { chromium } = require("playwright");
 
 const app = express();
 
-app.use(express.json({ limit: "10mb" }));
+app.use(cors());
+app.use(express.json({ limit: "2mb" }));
 
-// -------------------------------------
-// FORCE JSON RESPONSES
-// -------------------------------------
-app.use((req, res, next) => {
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  next();
-});
-
-// -------------------------------------
+// ---------------------------------------------------
 // HEALTH
-// -------------------------------------
+// ---------------------------------------------------
+
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
@@ -24,360 +19,338 @@ app.get("/health", (req, res) => {
   });
 });
 
-// -------------------------------------
-// DEBUG
-// -------------------------------------
 app.get("/debug", (req, res) => {
   res.json({
     ok: true,
-    version: "v7-dynamic-render-stable",
+    version: "v8-refined-product-engine",
     timestamp: Date.now()
   });
 });
 
-// -------------------------------------
-// SAFE PAGE NAVIGATION
-// -------------------------------------
-async function safeGoto(page, url) {
-  try {
-    await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: 60000
-    });
-  } catch {
-    await page.goto(url, {
-      waitUntil: "load",
-      timeout: 60000
-    });
-  }
+// ---------------------------------------------------
+// BROWSER
+// ---------------------------------------------------
 
-  // initial hydration wait
-  await page.waitForTimeout(8000);
+async function createBrowser() {
 
-  // attempt network stabilization
-  try {
-    await page.waitForLoadState("networkidle", {
-      timeout: 15000
-    });
-  } catch {}
-
-  // scroll trigger
-  try {
-    await page.evaluate(() => {
-      window.scrollTo(0, document.body.scrollHeight);
-    });
-  } catch {}
-
-  await page.waitForTimeout(3000);
+  return await chromium.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-blink-features=AutomationControlled"
+    ]
+  });
 }
 
-// -------------------------------------
+// ---------------------------------------------------
+// HELPERS
+// ---------------------------------------------------
+
+function isSearchUrl(url) {
+  return url.includes("/search?");
+}
+
+function isProductUrl(url) {
+  return url.includes("/product/");
+}
+
+// ---------------------------------------------------
 // SEARCH EXTRACTION
-// -------------------------------------
+// ---------------------------------------------------
+
 async function extractSearch(page, url) {
 
-  const results = await page.evaluate(() => {
+  try {
 
-    const items = [];
-
-    // ---------------------------------
-    // DIRECT PRODUCT LINKS
-    // ---------------------------------
-    document.querySelectorAll("a").forEach(a => {
-
-      const href = a.href || "";
-      const text = (a.innerText || "").trim();
-
-      if (
-        href.includes("/product/") &&
-        text.length > 2
-      ) {
-        items.push({
-          title: text.slice(0, 120),
-          url: href
-        });
-      }
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: 90000
     });
 
-    // ---------------------------------
-    // SCRIPT JSON EXTRACTION
-    // ---------------------------------
-    const scripts = Array.from(
-      document.querySelectorAll("script")
-    );
+    await page.waitForTimeout(5000);
 
-    for (const script of scripts) {
+    const results = await page.evaluate(() => {
 
-      const txt = script.innerText || "";
+      const links = Array.from(
+        document.querySelectorAll("a")
+      );
 
-      if (
-        txt.includes("product") ||
-        txt.includes("search") ||
-        txt.includes("results")
-      ) {
+      const products = links
+        .filter(link =>
+          link.href &&
+          link.href.includes("/product/")
+        )
+        .map(link => ({
+          title: (link.innerText || "").trim(),
+          url: link.href
+        }))
+        .filter(item =>
+          item.url &&
+          item.title
+        );
 
-        // find product URLs inside raw JS
-        const matches = txt.match(
-          /https:\/\/www\.ecotradegroup\.com\/en\/product\/[^"'\\ ]+/g
-        ) || [];
+      // Remove duplicates
+      const unique = [];
 
-        matches.forEach(url => {
-          items.push({
-            title: "EcoTrade Product",
-            url
-          });
-        });
-      }
-    }
+      const seen = new Set();
 
-    // ---------------------------------
-    // DEDUPE
-    // ---------------------------------
-    const seen = new Set();
+      for (const item of products) {
 
-    return items.filter(item => {
+        if (!seen.has(item.url)) {
 
-      if (!item.url) return false;
+          seen.add(item.url);
 
-      if (seen.has(item.url)) {
-        return false;
+          unique.push(item);
+        }
       }
 
-      seen.add(item.url);
-
-      return true;
+      return unique.slice(0, 20);
     });
-  });
-
-  return {
-    ok: true,
-    data: {
-      type: "search",
-      query: url,
-      results,
-      count: results.length,
-      debug:
-        results.length === 0
-          ? "No product matches detected"
-          : "Search extraction successful"
-    }
-  };
-}
-
-// -------------------------------------
-// PRODUCT EXTRACTION
-// -------------------------------------
-async function extractProduct(page) {
-
-  const data = await page.evaluate(() => {
-
-    const bodyText =
-      document.body?.innerText || "";
-
-    // ---------------------------------
-    // TITLE
-    // ---------------------------------
-    const title =
-      document.querySelector("h1")?.innerText?.trim() ||
-      document.title ||
-      "Unknown Product";
-
-    // ---------------------------------
-    // REFERENCES
-    // ---------------------------------
-    const references = [
-      ...new Set(
-        (
-          bodyText.match(
-            /\b[A-Z0-9\-]{5,20}\b/g
-          ) || []
-        )
-      )
-    ]
-    .filter(x => /\d/.test(x))
-    .slice(0, 50);
-
-    // ---------------------------------
-    // PRICE DETECTION
-    // ---------------------------------
-    const priceHints = [
-      ...new Set(
-        (
-          bodyText.match(
-            /(R\s?\d[\d\s,.]*)|(€\s?\d[\d\s,.]*)|(\$\s?\d[\d\s,.]*)/g
-          ) || []
-        )
-      )
-    ].slice(0, 20);
-
-    // ---------------------------------
-    // IMAGES
-    // ---------------------------------
-    const images = Array.from(document.images)
-      .map(img => img.src)
-      .filter(src =>
-        src &&
-        src.startsWith("http")
-      )
-      .slice(0, 15);
-
-    // ---------------------------------
-    // TEXT BLOCKS
-    // ---------------------------------
-    const paragraphs = Array.from(
-      document.querySelectorAll("p, li, div")
-    )
-      .map(el => (el.innerText || "").trim())
-      .filter(text =>
-        text.length > 40 &&
-        text.length < 500
-      )
-      .slice(0, 20);
 
     return {
-      type: "product",
-      title,
-      references,
-      priceHints,
-      images,
-      preview: bodyText.slice(0, 1500),
-      paragraphs
+      ok: true,
+      data: {
+        type: "search",
+        query: url,
+        results,
+        count: results.length
+      }
     };
-  });
 
-  return {
-    ok: true,
-    data
-  };
+  } catch (error) {
+
+    return {
+      ok: false,
+      error: error.message
+    };
+  }
 }
 
-// -------------------------------------
-// MAIN SCRAPER
-// -------------------------------------
-async function scrape(url) {
+// ---------------------------------------------------
+// PRODUCT EXTRACTION
+// ---------------------------------------------------
+
+async function extractProduct(page, url) {
+
+  try {
+
+    await page.goto(url, {
+      waitUntil: "networkidle",
+      timeout: 90000
+    });
+
+    await page.waitForTimeout(4000);
+
+    const data = await page.evaluate(() => {
+
+      const clean = (txt = "") =>
+        txt.replace(/\s+/g, " ").trim();
+
+      // ---------------------------------
+      // TARGET MAIN CONTENT
+      // ---------------------------------
+
+      const main =
+        document.querySelector("main") ||
+        document.body;
+
+      const fullText = clean(main.innerText);
+
+      // ---------------------------------
+      // TITLE
+      // ---------------------------------
+
+      const title =
+        clean(
+          document.querySelector("h1")?.innerText
+        ) ||
+        "Unknown Product";
+
+      // ---------------------------------
+      // REFERENCES
+      // ---------------------------------
+
+      const references = [
+        ...new Set(
+          (
+            fullText.match(/\b[A-Z0-9\-]{5,20}\b/g) || []
+          )
+        )
+      ]
+      .filter(ref => /\d/.test(ref))
+      .slice(0, 25);
+
+      // ---------------------------------
+      // PRICE HINTS
+      // ---------------------------------
+
+      const priceHints = [
+        ...new Set(
+          (
+            fullText.match(
+              /(R\s?\d[\d\s,.]*)|(€\s?\d[\d\s,.]*)|(\$\s?\d[\d\s,.]*)/g
+            ) || []
+          )
+        )
+      ].slice(0, 10);
+
+      // ---------------------------------
+      // PRODUCT DETAILS
+      // ---------------------------------
+
+      const productDetails = {};
+
+      const labels = [
+        "Brand",
+        "Maker",
+        "Product Type",
+        "Years",
+        "Car Models",
+        "Ref"
+      ];
+
+      labels.forEach(label => {
+
+        const regex = new RegExp(
+          `${label}\\s+(.*?)(?=Brand|Maker|Product Type|Years|Car Models|Ref|Share|$)`,
+          "i"
+        );
+
+        const match = fullText.match(regex);
+
+        if (match?.[1]) {
+
+          productDetails[label] =
+            clean(match[1]).slice(0, 300);
+        }
+      });
+
+      // ---------------------------------
+      // CLEAN IMAGES
+      // ---------------------------------
+
+      const images = Array.from(document.images)
+        .map(img => img.src)
+        .filter(src =>
+          src &&
+          src.includes("/uploads/") &&
+          !src.includes("flag") &&
+          !src.includes("badge")
+        )
+        .slice(0, 10);
+
+      return {
+        type: "product",
+        title,
+        references,
+        priceHints,
+        productDetails,
+        images,
+        preview: fullText.slice(0, 1000)
+      };
+    });
+
+    return {
+      ok: true,
+      data
+    };
+
+  } catch (error) {
+
+    return {
+      ok: false,
+      error: error.message
+    };
+  }
+}
+
+// ---------------------------------------------------
+// API
+// ---------------------------------------------------
+
+app.post("/scrape-product", async (req, res) => {
 
   let browser;
 
   try {
 
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--single-process"
-      ]
-    });
+    const { url } = req.body;
 
-    const context = await browser.newContext({
-      viewport: {
-        width: 1366,
-        height: 768
-      },
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36"
-    });
+    if (!url) {
 
-    const page = await context.newPage();
-
-    // prevent image overload
-    await page.route("**/*", route => {
-
-      const type = route.request().resourceType();
-
-      if (
-        type === "font" ||
-        type === "media"
-      ) {
-        return route.abort();
-      }
-
-      route.continue();
-    });
-
-    await safeGoto(page, url);
-
-    // ---------------------------------
-    // SEARCH MODE
-    // ---------------------------------
-    if (!url.includes("/product/")) {
-
-      const result = await extractSearch(page, url);
-
-      return result;
+      return res.json({
+        ok: false,
+        error: "URL is required"
+      });
     }
 
+    browser = await createBrowser();
+
+    const page = await browser.newPage({
+
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36"
+    });
+
+    await page.setViewportSize({
+      width: 1400,
+      height: 1200
+    });
+
+    let result;
+
     // ---------------------------------
-    // PRODUCT MODE
+    // ROUTING
     // ---------------------------------
-    const result = await extractProduct(page);
 
-    return result;
+    if (isSearchUrl(url)) {
 
-  } catch (err) {
+      result = await extractSearch(page, url);
 
-    return {
-      ok: false,
-      error: err.message
-    };
+    } else if (isProductUrl(url)) {
 
-  } finally {
+      result = await extractProduct(page, url);
+
+    } else {
+
+      result = {
+        ok: false,
+        error: "Unsupported EcoTrade URL"
+      };
+    }
+
+    await page.close();
+
+    await browser.close();
+
+    return res.json(result);
+
+  } catch (error) {
 
     if (browser) {
+
       try {
         await browser.close();
       } catch {}
     }
-  }
-}
-
-// -------------------------------------
-// API ENDPOINT
-// -------------------------------------
-app.post("/scrape-product", async (req, res) => {
-
-  try {
-
-    const url = req.body?.url;
-
-    if (!url) {
-      return res.json({
-        ok: false,
-        error: "Missing URL"
-      });
-    }
-
-    const result = await scrape(url);
-
-    return res.json(result);
-
-  } catch (err) {
 
     return res.json({
       ok: false,
-      error: err.message
+      error: error.message
     });
   }
 });
 
-// -------------------------------------
-// FALLBACK 404
-// -------------------------------------
-app.use((req, res) => {
-  res.status(404).json({
-    ok: false,
-    error: "Route not found"
-  });
-});
+// ---------------------------------------------------
+// START
+// ---------------------------------------------------
 
-// -------------------------------------
-// START SERVER
-// -------------------------------------
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
   console.log(
-    `Catalytic Intelligence API running on port ${PORT}`
+    `Catalytic Intelligence v8 running on port ${PORT}`
   );
 });
