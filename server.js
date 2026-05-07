@@ -8,7 +8,7 @@ app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
 // -----------------------------------------------------
-// FORCE JSON ONLY
+// 🔒 FORCE JSON RESPONSE ALWAYS (CRITICAL)
 // -----------------------------------------------------
 app.use((req, res, next) => {
   res.setHeader("Content-Type", "application/json");
@@ -19,7 +19,7 @@ app.use((req, res, next) => {
 // HEALTH
 // -----------------------------------------------------
 app.get("/health", (req, res) => {
-  res.json({
+  res.status(200).json({
     ok: true,
     service: "catalytic-intelligence-level3",
     status: "online"
@@ -27,9 +27,9 @@ app.get("/health", (req, res) => {
 });
 
 app.get("/debug", (req, res) => {
-  res.json({
+  res.status(200).json({
     ok: true,
-    version: "level3-fixed-playwright",
+    version: "level3-production-safe",
     timestamp: Date.now()
   });
 });
@@ -56,29 +56,29 @@ async function getBrowser() {
 }
 
 // -----------------------------------------------------
-// SAFE NAVIGATION
+// SAFE NAVIGATION (ANTI-TIMEOUT RESILIENCE)
 // -----------------------------------------------------
 async function safeGoto(page, url) {
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     await page.waitForTimeout(2000);
-  } catch (e) {
+  } catch (err) {
     await page.goto(url, { waitUntil: "load", timeout: 90000 });
     await page.waitForTimeout(4000);
   }
 }
 
 // -----------------------------------------------------
-// SCRAPER CORE (FIXED PLAYWRIGHT CONTEXT ISSUE)
+// SCRAPER CORE (FULLY SAFE)
 // -----------------------------------------------------
 async function scrape(url) {
   let browser;
+  let context;
 
   try {
     browser = await getBrowser();
 
-    // ✅ FIX: use context instead of page.setUserAgent (CRITICAL FIX)
-    const context = await browser.newContext({
+    context = await browser.newContext({
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
       viewport: { width: 1366, height: 768 }
@@ -117,12 +117,12 @@ async function scrape(url) {
         .slice(0, 12);
 
       const productDetails = {
-        brand: text.match(/Brand\s+([A-Za-z0-9 ]+)/i)?.[1],
-        maker: text.match(/Maker\s+([A-Za-z0-9 ]+)/i)?.[1],
-        type: text.match(/Product Type\s+([A-Za-z0-9 +]+)/i)?.[1],
-        ref: text.match(/Ref\s+([A-Za-z0-9 ]+)/i)?.[1],
-        years: text.match(/Years\s+([0-9, ]+)/i)?.[1],
-        carModels: text.match(/Car Models\s+([A-Za-z0-9 -]+)/i)?.[1]
+        brand: text.match(/Brand\s+([A-Za-z0-9 ]+)/i)?.[1] || null,
+        maker: text.match(/Maker\s+([A-Za-z0-9 ]+)/i)?.[1] || null,
+        type: text.match(/Product Type\s+([A-Za-z0-9 +]+)/i)?.[1] || null,
+        ref: text.match(/Ref\s+([A-Za-z0-9 ]+)/i)?.[1] || null,
+        years: text.match(/Years\s+([0-9, ]+)/i)?.[1] || null,
+        carModels: text.match(/Car Models\s+([A-Za-z0-9 -]+)/i)?.[1] || null
       };
 
       return {
@@ -136,7 +136,7 @@ async function scrape(url) {
       };
     });
 
-    await context.close(); // important cleanup
+    await context.close();
 
     return {
       ok: true,
@@ -150,7 +150,8 @@ async function scrape(url) {
   } catch (err) {
     return {
       ok: false,
-      error: err.message,
+      error: "SCRAPER_FAILED",
+      message: err.message,
       meta: {
         source: "ecotrade",
         reliability: "failed"
@@ -160,25 +161,37 @@ async function scrape(url) {
 }
 
 // -----------------------------------------------------
-// ROUTE
+// 🔥 SAFE API ROUTE (NO HTML EVER LEAKS)
 // -----------------------------------------------------
 app.post("/scrape-product", async (req, res) => {
-  const { url } = req.body || {};
+  try {
+    const { url } = req.body || {};
 
-  if (!url) {
-    return res.json({ ok: false, error: "URL_REQUIRED" });
+    if (!url) {
+      return res.status(400).json({
+        ok: false,
+        error: "URL_REQUIRED"
+      });
+    }
+
+    const result = await scrape(url);
+
+    return res.status(200).json(result);
+
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      error: "INTERNAL_SERVER_ERROR",
+      message: err.message
+    });
   }
-
-  const result = await scrape(url);
-  return res.json(result);
 });
 
 // -----------------------------------------------------
-// GLOBAL ERROR HANDLER
+// GLOBAL SAFETY NET (CRITICAL FOR RENDER)
 // -----------------------------------------------------
 app.use((err, req, res, next) => {
-  console.error(err);
-  res.json({
+  return res.status(500).json({
     ok: false,
     error: "UNHANDLED_EXCEPTION",
     message: err.message
@@ -191,5 +204,5 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 Catalytic Intelligence Level 3 FIXED running on ${PORT}`);
+  console.log(`🚀 Production-safe Catalytic Intelligence running on ${PORT}`);
 });
