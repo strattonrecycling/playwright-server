@@ -5,7 +5,7 @@ const app = express();
 app.use(express.json({ limit: "10mb" }));
 
 // -------------------------------------
-// FORCE JSON SAFETY (CRITICAL)
+// HARD JSON SAFETY
 // -------------------------------------
 app.use((req, res, next) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -16,9 +16,9 @@ app.use((req, res, next) => {
 // HEALTH
 // -------------------------------------
 app.get("/health", (req, res) => {
-  return res.status(200).json({
+  res.json({
     status: "ok",
-    service: "playwright-server-hardened",
+    service: "catalytic-intelligence-v4",
     uptime: process.uptime()
   });
 });
@@ -27,22 +27,17 @@ app.get("/health", (req, res) => {
 // DEBUG
 // -------------------------------------
 app.get("/debug", (req, res) => {
-  return res.status(200).json({
+  res.json({
     status: "ok",
-    version: "hardened-v3",
+    version: "v4-router-extractor",
     timestamp: Date.now()
   });
 });
 
 // -------------------------------------
-// SAFE DELAY
+// PLAYWRIGHT CORE
 // -------------------------------------
-const delay = (ms) => new Promise(r => setTimeout(r, ms));
-
-// -------------------------------------
-// PLAYWRIGHT CORE (SAFE)
-// -------------------------------------
-async function fetchPage(url) {
+async function loadPage(url) {
   let browser;
 
   try {
@@ -63,7 +58,7 @@ async function fetchPage(url) {
       timeout: 60000
     });
 
-    await delay(2500);
+    await page.waitForTimeout(2500);
 
     return { ok: true, page };
 
@@ -76,12 +71,7 @@ async function fetchPage(url) {
 }
 
 // -------------------------------------
-// SAFE ARRAY GUARD
-// -------------------------------------
-const safeArray = (arr) => Array.isArray(arr) ? arr : [];
-
-// -------------------------------------
-// SEARCH EXTRACTION
+// SEARCH EXTRACTOR
 // -------------------------------------
 async function extractSearch(page, url) {
   const results = await page.evaluate(() => {
@@ -95,7 +85,7 @@ async function extractSearch(page, url) {
         title &&
         href &&
         title.length > 6 &&
-        href.includes("ecotradegroup")
+        href.includes("/product/")
       ) {
         items.push({ title, url: href });
       }
@@ -107,29 +97,35 @@ async function extractSearch(page, url) {
   return {
     type: "search",
     query: url,
-    results: safeArray(results).slice(0, 30),
-    count: safeArray(results).length
+    results: results.slice(0, 30),
+    count: results.length
   };
 }
 
 // -------------------------------------
-// PRODUCT EXTRACTION
+// PRODUCT EXTRACTOR (REAL STRUCTURE)
 // -------------------------------------
 async function extractProduct(page, url) {
   const data = await page.evaluate(() => {
     const text = document.body.innerText || "";
 
-    const refs = text.match(/\b\d{6,10}\b/g);
-
     const title =
       document.querySelector("h1")?.innerText?.trim() ||
-      document.title ||
+      document.title;
+
+    // OEM / reference detection (6–10 digit codes)
+    const refs = text.match(/\b\d{6,10}\b/g) || [];
+
+    // try to find brand from breadcrumb or title
+    const brandGuess =
+      document.querySelector(".breadcrumb")?.innerText?.split("\n")[1] ||
       null;
 
     return {
       title,
-      reference: refs ? refs[0] : null,
-      preview: text.slice(0, 300)
+      brand: brandGuess,
+      references: [...new Set(refs)].slice(0, 15),
+      preview: text.slice(0, 400)
     };
   });
 
@@ -141,21 +137,21 @@ async function extractProduct(page, url) {
 }
 
 // -------------------------------------
-// HARD GUARANTEED SAFE RESPONSE WRAPPER
+// SAFE JSON WRAPPER
 // -------------------------------------
-function safeJson(obj) {
+function safe(obj) {
   try {
     return JSON.parse(JSON.stringify(obj));
   } catch {
     return {
       type: "error",
-      message: "Serialization error"
+      message: "Serialization failure"
     };
   }
 }
 
 // -------------------------------------
-// MAIN ENDPOINT (NO HTML EVER)
+// MAIN ROUTE (FIXED ROUTING LOGIC)
 // -------------------------------------
 app.post("/scrape-product", async (req, res) => {
   try {
@@ -168,27 +164,32 @@ app.post("/scrape-product", async (req, res) => {
       });
     }
 
-    const result = await fetchPage(url);
+    const pageResult = await loadPage(url);
 
-    if (!result.ok) {
+    if (!pageResult.ok) {
       return res.status(200).json({
         type: "error",
-        message: result.error
+        message: pageResult.error
       });
     }
 
-    const page = result.page;
-    const isSearch = url.includes("search");
+    const page = pageResult.page;
 
     let output;
 
-    if (isSearch) {
+    // STRICT ROUTING (THIS IS KEY FIX)
+    if (url.includes("/product/")) {
+      output = await extractProduct(page, url);
+    } else if (url.includes("/search")) {
       output = await extractSearch(page, url);
     } else {
-      output = await extractProduct(page, url);
+      output = {
+        type: "unknown",
+        message: "Unsupported page type"
+      };
     }
 
-    return res.status(200).json(safeJson(output));
+    return res.status(200).json(safe(output));
 
   } catch (err) {
     return res.status(200).json({
@@ -199,20 +200,20 @@ app.post("/scrape-product", async (req, res) => {
 });
 
 // -------------------------------------
-// GLOBAL SAFETY NET (CATCH EVERYTHING)
+// GLOBAL SAFETY NET
 // -------------------------------------
 app.use((err, req, res, next) => {
   return res.status(200).json({
     type: "error",
-    message: err.message || "Unknown server error"
+    message: err.message || "Server error"
   });
 });
 
 // -------------------------------------
-// START SERVER
+// START
 // -------------------------------------
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log("Hardened Playwright server running on port", PORT);
+  console.log("Catalytic Intelligence v4 running on port", PORT);
 });
