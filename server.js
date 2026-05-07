@@ -21,7 +21,7 @@ app.get("/health", (req, res) => {
 app.get("/debug", (req, res) => {
   res.json({
     status: "debug-ok",
-    version: "final-intelligent-scraper",
+    version: "locator-extraction-v2",
     timestamp: Date.now()
   });
 });
@@ -53,110 +53,134 @@ async function getUsdToZar() {
 }
 
 // -----------------------------
-// PLAYWRIGHT RENDER
+// PLAYWRIGHT SCRAPER CORE
 // -----------------------------
-async function render(url) {
-  let browser;
+async function scrape(url) {
+  const browser = await chromium.launch({
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+  });
+
+  const page = await browser.newPage();
 
   try {
-    browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"]
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000
     });
 
-    const page = await browser.newPage();
+    // 🔥 CRITICAL: allow JS-rendered content to load
+    await page.waitForTimeout(6000);
 
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-    await page.waitForTimeout(5000);
-
-    const html = await page.content();
-
-    return html;
-  } finally {
-    if (browser) await browser.close();
+    return { page, browser };
+  } catch (err) {
+    await browser.close();
+    throw err;
   }
 }
 
 // -----------------------------
-// MODE DETECTION
+// SEARCH MODE (FIXED - RELIABLE)
 // -----------------------------
-function getMode(url) {
-  if (url.includes("/search?query=")) return "search";
-  if (url.includes("/product/")) return "product";
-  return "generic";
-}
+async function scrapeSearch(page) {
+  // 🔥 wait for ANY links (EcoTrade is JS-heavy)
+  await page.waitForTimeout(3000);
 
-// -----------------------------
-// SEARCH PARSER
-// -----------------------------
-function parseSearch(html, baseUrl) {
-  const links = [...html.matchAll(/href="(\/en\/product\/[^"]+)"/g)];
-
-  const results = links.map((m) => ({
-    title: "Product",
-    url: baseUrl + m[1]
-  }));
+  const results = await page.locator("a").evaluateAll((anchors) => {
+    return anchors
+      .map(a => ({
+        href: a.getAttribute("href") || "",
+        text: a.innerText || ""
+      }))
+      .filter(a =>
+        a.href.includes("/product/") &&
+        a.text.trim().length > 2
+      )
+      .map(a => ({
+        title: a.text.trim(),
+        url: a.href.startsWith("http")
+          ? a.href
+          : "https://www.ecotradegroup.com" + a.href
+      }))
+      .slice(0, 10);
+  });
 
   return {
     type: "search",
-    results: results.slice(0, 10)
+    results
   };
 }
 
 // -----------------------------
-// PRODUCT PARSER (SAFE)
+// PRODUCT MODE (SAFE EXTRACTION)
 // -----------------------------
-function extractField(html, label) {
-  const regex = new RegExp(`<th[^>]*>${label}<\/th>[\\s\\S]*?<td[^>]*>([\\s\\S]*?)<\/td>`, "i");
-  const match = html.match(regex);
-  return match ? match[1].replace(/<[^>]*>/g, "").trim() : null;
+async function scrapeProduct(page) {
+  const getText = async (label) => {
+    try {
+      return await page.locator(`text=${label}`).first().textContent();
+    } catch {
+      return null;
+    }
+  };
+
+  const priceText = await getText("Price");
+  const usd = parseFloat((priceText || "").replace(/[^0-9.]/g, "")) || 0;
+
+  const rate = await getUsdToZar();
+
+  return {
+    type: "product",
+    brand: await getText("Brand") || "Unknown",
+    productType: await getText("Product Type") || "Unknown",
+    ref: await getText("Ref") || "Unknown",
+    years: await getText("Years") || "Unknown",
+    carModels: await getText("Car Models") || "Unknown",
+    price: {
+      usd,
+      zar: Math.round(usd * rate)
+    }
+  };
 }
 
 // -----------------------------
-// SCRAPE ENDPOINT
+// MAIN ENDPOINT
 // -----------------------------
 app.post("/scrape-product", async (req, res) => {
+  let browser;
+
   try {
     const { url } = req.body;
-    if (!url) return res.json({ status: "error", message: "missing url" });
-
-    const html = await render(url);
-    const mode = getMode(url);
-
-    // -----------------------------
-    // SEARCH MODE
-    // -----------------------------
-    if (mode === "search") {
-      return res.json(parseSearch(html, "https://www.ecotradegroup.com"));
+    if (!url) {
+      return res.json({ status: "error", message: "missing url" });
     }
 
-    // -----------------------------
-    // PRODUCT MODE
-    // -----------------------------
-    const usdText = extractField(html, "Price");
-    const usd = usdText ? parseFloat(usdText.replace(/[^0-9.]/g, "")) : 0;
+    const mode = url.includes("/search?query=")
+      ? "search"
+      : url.includes("/product/")
+      ? "product"
+      : "generic";
 
-    const rate = await getUsdToZar();
+    const { page, browser: b } = await scrape(url);
+    browser = b;
 
-    return res.json({
-      type: "product",
-      url,
-      brand: extractField(html, "Brand") || "Unknown",
-      productType: extractField(html, "Product Type") || "Unknown",
-      ref: extractField(html, "Ref") || "Unknown",
-      years: extractField(html, "Years") || "Unknown",
-      carModels: extractField(html, "Car Models") || "Unknown",
-      price: {
-        usd,
-        zar: Math.round(usd * rate)
-      }
-    });
+    let result;
+
+    if (mode === "search") {
+      result = await scrapeSearch(page);
+    } else {
+      result = await scrapeProduct(page);
+    }
+
+    return res.json(result);
 
   } catch (err) {
     return res.json({
       status: "error",
       message: err.message
     });
+
+  } finally {
+    if (browser) await browser.close();
   }
 });
 
