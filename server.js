@@ -5,10 +5,10 @@ const { chromium } = require("playwright");
 const app = express();
 
 app.use(cors());
-app.use(express.json({ limit: "5mb" }));
+app.use(express.json({ limit: "10mb" }));
 
 // -----------------------------------------------------
-// FORCE JSON ONLY (CRITICAL FIX FOR "<!DOCTYPE")
+// FORCE JSON ONLY (NO HTML EVER)
 // -----------------------------------------------------
 app.use((req, res, next) => {
   res.setHeader("Content-Type", "application/json");
@@ -21,7 +21,7 @@ app.use((req, res, next) => {
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    service: "catalytic-intelligence-api",
+    service: "catalytic-intelligence-level3",
     status: "online"
   });
 });
@@ -29,25 +29,44 @@ app.get("/health", (req, res) => {
 app.get("/debug", (req, res) => {
   res.json({
     ok: true,
-    version: "v12-hardened",
+    version: "level3-intelligence",
     timestamp: Date.now()
   });
 });
 
 // -----------------------------------------------------
-// BROWSER (STABLE CONFIG)
+// BROWSER SINGLETON (IMPORTANT UPGRADE)
 // -----------------------------------------------------
-async function createBrowser() {
-  return await chromium.launch({
-    headless: true,
-    ignoreHTTPSErrors: true,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-blink-features=AutomationControlled"
-    ]
-  });
+let browserInstance = null;
+
+async function getBrowser() {
+  if (!browserInstance) {
+    browserInstance = await chromium.launch({
+      headless: true,
+      ignoreHTTPSErrors: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled"
+      ]
+    });
+  }
+  return browserInstance;
+}
+
+// -----------------------------------------------------
+// SMART PAGE LOADER (ANTI-BLOCK LAYER)
+// -----------------------------------------------------
+async function safeGoto(page, url) {
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForTimeout(2000);
+  } catch (e) {
+    // retry with longer wait (EcoTrade sometimes delays hydration)
+    await page.goto(url, { waitUntil: "load", timeout: 90000 });
+    await page.waitForTimeout(4000);
+  }
 }
 
 // -----------------------------------------------------
@@ -57,12 +76,11 @@ async function scrape(url) {
   let browser;
 
   try {
-    browser = await createBrowser();
+    browser = await getBrowser();
     const page = await browser.newPage();
 
-    // realistic headers
     await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36"
     );
 
     await page.setExtraHTTPHeaders({
@@ -71,105 +89,74 @@ async function scrape(url) {
 
     await page.setViewportSize({ width: 1366, height: 768 });
 
-    await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: 60000
-    });
+    await safeGoto(page, url);
 
-    // smarter hydration wait (no long freezes)
-    await page.waitForTimeout(2500);
-
-    const data = await page.evaluate(() => {
-
+    const result = await page.evaluate(() => {
       const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
 
-      // ---------------------------
-      // TITLE FIX (ROBUST)
-      // ---------------------------
-      const title =
-        clean(document.querySelector("h1")?.innerText) ||
-        clean(document.querySelector("[class*='title']")?.innerText) ||
-        clean(document.title);
+      const text = clean(document.body.innerText);
+      const title = clean(
+        document.querySelector("h1")?.innerText ||
+        document.querySelector("[class*='title']")?.innerText ||
+        document.title
+      );
 
-      // ---------------------------
-      // MAIN CONTAINER
-      // ---------------------------
-      const container =
-        document.querySelector("main") ||
-        document.body;
+      const isProduct = /\/product\//.test(location.href);
 
-      const text = clean(container.innerText);
+      const references = [...new Set(text.match(/\b\d{6,14}\b/g) || [])].slice(0, 30);
 
-      // ---------------------------
-      // OEM REFERENCES
-      // ---------------------------
-      const references = [
-        ...new Set(text.match(/\b\d{6,14}\b/g) || [])
-      ].slice(0, 30);
+      const priceHints = [...new Set(text.match(/(\$\s?\d[\d\s,.]*)/g) || [])].slice(0, 10);
 
-      // ---------------------------
-      // PRICES
-      // ---------------------------
-      const priceHints = [
-        ...new Set(text.match(/(\$\s?\d[\d\s,.]*)|(€\s?\d[\d\s,.]*)|(R\s?\d[\d\s,.]*)/g) || [])
-      ].slice(0, 10);
-
-      // ---------------------------
-      // PRODUCT DETAILS EXTRACTION
-      // ---------------------------
-      const pick = (label) => {
-        const r = new RegExp(`${label}\\s+(.*?)(?=Brand|Maker|Ref|Years|Car Models|$)`, "i");
-        const m = text.match(r);
-        return m ? clean(m[1]) : null;
-      };
-
-      const productDetails = {
-        brand: pick("Brand"),
-        maker: pick("Maker"),
-        productType: pick("Product Type"),
-        years: pick("Years"),
-        carModels: pick("Car Models"),
-        ref: pick("Ref")
-      };
-
-      // ---------------------------
-      // IMAGES (FILTERED)
-      // ---------------------------
       const images = Array.from(document.images)
         .map(i => i.src)
         .filter(src =>
           src &&
           src.includes("ecotradegroup") &&
           !src.includes("flag") &&
-          !src.includes("logo") &&
-          !src.includes("badge")
+          !src.includes("logo")
         )
-        .slice(0, 10);
+        .slice(0, 12);
+
+      // PRODUCT EXTRACTION
+      const productDetails = {
+        brand: text.match(/Brand\s+([A-Za-z0-9 ]+)/i)?.[1],
+        maker: text.match(/Maker\s+([A-Za-z0-9 ]+)/i)?.[1],
+        type: text.match(/Product Type\s+([A-Za-z0-9 +]+)/i)?.[1],
+        ref: text.match(/Ref\s+([A-Za-z0-9 ]+)/i)?.[1],
+        years: text.match(/Years\s+([0-9, ]+)/i)?.[1],
+        carModels: text.match(/Car Models\s+([A-Za-z0-9 -]+)/i)?.[1]
+      };
 
       return {
-        type: url.includes("/product/") ? "product" : "search",
+        type: isProduct ? "product" : "search",
         title,
         references,
         priceHints,
-        productDetails,
         images,
-        preview: text.slice(0, 1200)
+        productDetails,
+        preview: text.slice(0, 1500)
       };
     });
 
-    await browser.close();
+    await page.close();
 
     return {
       ok: true,
-      data
+      data: result,
+      meta: {
+        source: "ecotrade",
+        reliability: result.references.length > 0 ? "high" : "fallback"
+      }
     };
 
   } catch (err) {
-    if (browser) await browser.close().catch(() => {});
-
     return {
       ok: false,
-      error: err.message
+      error: err.message,
+      meta: {
+        source: "ecotrade",
+        reliability: "failed"
+      }
     };
   }
 }
@@ -178,35 +165,21 @@ async function scrape(url) {
 // ROUTE
 // -----------------------------------------------------
 app.post("/scrape-product", async (req, res) => {
-  try {
-    const { url } = req.body || {};
+  const { url } = req.body || {};
 
-    if (!url) {
-      return res.json({
-        ok: false,
-        error: "URL_REQUIRED"
-      });
-    }
-
-    const result = await scrape(url);
-
-    return res.json(result);
-
-  } catch (err) {
-    return res.json({
-      ok: false,
-      error: "FATAL_SERVER_ERROR",
-      message: err.message
-    });
+  if (!url) {
+    return res.json({ ok: false, error: "URL_REQUIRED" });
   }
+
+  const result = await scrape(url);
+  return res.json(result);
 });
 
 // -----------------------------------------------------
-// GLOBAL SAFETY NET (NO HTML EVER)
+// GLOBAL SAFETY NET
 // -----------------------------------------------------
 app.use((err, req, res, next) => {
   console.error(err);
-
   res.json({
     ok: false,
     error: "UNHANDLED_EXCEPTION",
@@ -220,5 +193,5 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 v12 hardened scraper running on port ${PORT}`);
+  console.log(`🚀 Level 3 Intelligence API running on ${PORT}`);
 });
