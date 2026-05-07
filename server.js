@@ -5,7 +5,7 @@ const app = express();
 app.use(express.json({ limit: "10mb" }));
 
 // -------------------------------------
-// FORCE JSON SAFETY (CRITICAL FOR BASE44)
+// FORCE JSON SAFETY (BASE44 FIX)
 // -------------------------------------
 app.use((req, res, next) => {
   res.setHeader("Content-Type", "application/json");
@@ -13,7 +13,7 @@ app.use((req, res, next) => {
 });
 
 // -------------------------------------
-// HEALTH CHECK
+// HEALTH
 // -------------------------------------
 app.get("/health", (req, res) => {
   res.json({
@@ -29,12 +29,12 @@ app.get("/health", (req, res) => {
 app.get("/debug", (req, res) => {
   res.json({
     ok: true,
-    version: "production-v2-stable"
+    version: "production-v3-final"
   });
 });
 
 // -------------------------------------
-// CORE SCRAPER (PRODUCTION SAFE)
+// CORE SCRAPER
 // -------------------------------------
 async function scrape(url) {
   let browser;
@@ -44,20 +44,24 @@ async function scrape(url) {
       headless: true,
       args: [
         "--no-sandbox",
-        "--disable-dev-shm-usage"
+        "--disable-dev-shm-usage",
+        "--single-process"
       ]
     });
 
     const context = await browser.newContext();
     const page = await context.newPage();
 
+    // -------------------------------------
+    // NAVIGATION (ROBUST)
+    // -------------------------------------
     await page.goto(url, {
-      waitUntil: "domcontentloaded",
+      waitUntil: "networkidle",
       timeout: 60000
     });
 
-    // IMPORTANT: allow JS hydration (EcoTrade is dynamic)
-    await page.waitForTimeout(6000);
+    // DOM hydration buffer (EcoTrade needs this)
+    await page.waitForTimeout(5000);
 
     // -------------------------------------
     // SEARCH MODE
@@ -66,25 +70,42 @@ async function scrape(url) {
       const results = await page.evaluate(() => {
         const items = [];
 
-        const links = Array.from(document.querySelectorAll("a"));
+        const selectors = [
+          "a",
+          "article a",
+          "div a",
+          "li a"
+        ];
 
-        for (const a of links) {
-          const text = (a.innerText || "").trim();
-          const href = a.href || "";
+        selectors.forEach(sel => {
+          document.querySelectorAll(sel).forEach(a => {
+            const text = (a.innerText || "").trim();
+            const href = a.href || "";
 
-          // EcoTrade product detection (fully qualified URLs)
-          if (
-            text.length > 5 &&
-            href.includes("ecotradegroup.com/en/product/")
-          ) {
-            items.push({
-              title: text,
-              url: href
-            });
+            if (
+              text.length > 8 &&
+              href.includes("/product/")
+            ) {
+              items.push({
+                title: text.slice(0, 120),
+                url: href
+              });
+            }
+          });
+        });
+
+        // deduplicate
+        const unique = [];
+        const seen = new Set();
+
+        for (const r of items) {
+          if (!seen.has(r.url)) {
+            seen.add(r.url);
+            unique.push(r);
           }
         }
 
-        return items;
+        return unique.slice(0, 30);
       });
 
       return {
@@ -110,14 +131,33 @@ async function scrape(url) {
 
       const refs = text.match(/\b\d{6,10}\b/g) || [];
 
+      let jsonHint = null;
+
+      try {
+        const scripts = Array.from(document.querySelectorAll("script"));
+
+        for (const s of scripts) {
+          const t = s.innerText || "";
+          if (
+            t.includes("product") ||
+            t.includes("sku") ||
+            t.includes("reference")
+          ) {
+            jsonHint = t.slice(0, 300);
+            break;
+          }
+        }
+      } catch {}
+
       const priceHints = text.match(/€\s?\d+|\$\s?\d+|R\s?\d+/g) || [];
 
       return {
         type: "product",
         title,
-        references: [...new Set(refs)].slice(0, 20),
+        references: [...new Set(refs)].slice(0, 25),
         priceHints: [...new Set(priceHints)].slice(0, 10),
-        preview: text.slice(0, 500)
+        structuredDetected: !!jsonHint,
+        preview: text.slice(0, 600)
       };
     });
 
@@ -166,7 +206,7 @@ app.post("/scrape-product", async (req, res) => {
 });
 
 // -------------------------------------
-// START SERVER
+// START
 // -------------------------------------
 const PORT = process.env.PORT || 10000;
 
