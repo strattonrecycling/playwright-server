@@ -8,7 +8,7 @@ app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 
 // ---------------------------------------------------
-// ALWAYS JSON SAFETY MIDDLEWARE (CRITICAL FIX)
+// ALWAYS JSON SAFETY
 // ---------------------------------------------------
 
 app.use((req, res, next) => {
@@ -31,13 +31,13 @@ app.get("/health", (req, res) => {
 app.get("/debug", (req, res) => {
   res.json({
     ok: true,
-    version: "v10-bulletproof",
+    version: "v11-hydration-fixed",
     timestamp: Date.now()
   });
 });
 
 // ---------------------------------------------------
-// BROWSER FACTORY (ISOLATED PER REQUEST)
+// BROWSER
 // ---------------------------------------------------
 
 async function createBrowser() {
@@ -52,7 +52,7 @@ async function createBrowser() {
 }
 
 // ---------------------------------------------------
-// SAFE PRODUCT SCRAPER
+// PRODUCT SCRAPER (HYDRATION FIXED)
 // ---------------------------------------------------
 
 async function scrapeProduct(url) {
@@ -70,64 +70,105 @@ async function scrapeProduct(url) {
       timeout: 60000
     });
 
-    await page.waitForTimeout(3000);
+    // 🔥 HYDRATION STABILISATION DELAY
+    await page.waitForTimeout(5000);
 
     const data = await page.evaluate(() => {
-      const clean = (t = "") => t.replace(/\s+/g, " ").trim();
 
-      const main = document.querySelector("main") || document.body;
+      const clean = (t = "") =>
+        t.replace(/\s+/g, " ").trim();
 
-      const fullText = clean(main.innerText);
+      // ---------------------------------------
+      // TITLE (FORCED VALIDATION)
+      // ---------------------------------------
 
-      const title =
-        clean(document.querySelector("h1")?.innerText) ||
-        "Unknown Product";
+      const h1 = document.querySelector("h1");
+      const title = clean(h1?.innerText || "");
+
+      const bodyText = document.body.innerText;
+
+      const isValid =
+        title &&
+        title.length > 5 &&
+        /BMW|CATALYTIC|CONVERTER|DPF|OEM/i.test(bodyText);
+
+      // ---------------------------------------
+      // PRODUCT BLOCK SELECTION (FIXED)
+      // ---------------------------------------
+
+      const container =
+        document.querySelector(".product") ||
+        document.querySelector("[class*='product']") ||
+        document.querySelector("main") ||
+        document.body;
+
+      const text = clean(container.innerText);
+
+      // ---------------------------------------
+      // REFERENCES (OEM NUMBERS ONLY)
+      // ---------------------------------------
 
       const references = [
         ...new Set(
-          (fullText.match(/\b[A-Z0-9\-]{5,20}\b/g) || [])
+          (text.match(/\b\d{6,12}\b/g) || [])
         )
-      ].filter(r => /\d/.test(r)).slice(0, 30);
+      ].slice(0, 30);
+
+      // ---------------------------------------
+      // PRICE HINTS
+      // ---------------------------------------
 
       const priceHints = [
         ...new Set(
-          (fullText.match(/(\$\s?\d[\d\s,.]*)|(€\s?\d[\d\s,.]*)|(R\s?\d[\d\s,.]*)/g) || [])
+          (text.match(/(\$\s?\d[\d\s,.]*)|(€\s?\d[\d\s,.]*)|(R\s?\d[\d\s,.]*)/g) || [])
         )
       ].slice(0, 10);
 
-      const productDetails = {};
+      // ---------------------------------------
+      // PRODUCT DETAILS
+      // ---------------------------------------
 
-      const labels = ["Brand", "Maker", "Product Type", "Years", "Car Models", "Ref"];
-
-      labels.forEach(label => {
+      const get = (label) => {
         const regex = new RegExp(
           `${label}\\s+(.*?)(?=Brand|Maker|Product Type|Years|Car Models|Ref|Share|$)`,
           "i"
         );
+        const m = text.match(regex);
+        return m ? clean(m[1]).slice(0, 300) : null;
+      };
 
-        const match = fullText.match(regex);
+      const productDetails = {
+        brand: get("Brand"),
+        maker: get("Maker"),
+        productType: get("Product Type"),
+        years: get("Years"),
+        carModels: get("Car Models"),
+        ref: get("Ref")
+      };
 
-        if (match?.[1]) {
-          productDetails[label] = clean(match[1]).slice(0, 300);
-        }
-      });
+      // ---------------------------------------
+      // IMAGES (FILTERED CLEAN)
+      // ---------------------------------------
 
       const images = Array.from(document.images)
-        .map(img => img.src)
+        .map(i => i.src)
         .filter(src =>
           src &&
-          (src.includes("/uploads/") || src.includes("http"))
+          src.includes("uploads") &&
+          !src.includes("flag") &&
+          !src.includes("badge") &&
+          !src.includes("logo")
         )
-        .slice(0, 12);
+        .slice(0, 10);
 
       return {
         type: "product",
-        title,
+        title: isValid ? title : "INVALID_PRODUCT_CAPTURED",
         references,
         priceHints,
         productDetails,
         images,
-        preview: fullText.slice(0, 1200)
+        preview: text.slice(0, 1200)
       };
     });
 
@@ -157,7 +198,6 @@ async function scrapeProduct(url) {
 // ---------------------------------------------------
 
 app.post("/scrape-product", async (req, res) => {
-
   try {
     const { url } = req.body || {};
 
@@ -173,8 +213,6 @@ app.post("/scrape-product", async (req, res) => {
     return res.json(result);
 
   } catch (err) {
-
-    // 🔥 ABSOLUTE SAFETY NET (NO HTML EVER)
     return res.status(500).json({
       ok: false,
       error: "Fatal server error",
@@ -184,7 +222,7 @@ app.post("/scrape-product", async (req, res) => {
 });
 
 // ---------------------------------------------------
-// GLOBAL SAFETY FALLBACK (CRITICAL)
+// GLOBAL SAFETY
 // ---------------------------------------------------
 
 app.use((err, req, res, next) => {
@@ -202,5 +240,5 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 Bulletproof scraper running on port ${PORT}`);
+  console.log(`🚀 v11 hydration-fixed scraper running on port ${PORT}`);
 });
