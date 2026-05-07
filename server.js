@@ -8,16 +8,16 @@ app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
 // -----------------------------------------------------
-// 🔒 ABSOLUTE JSON LOCK (NO HTML EVER)
+// 🔒 GLOBAL JSON SAFETY LAYER (NO HTML EVER)
 // -----------------------------------------------------
 app.use((req, res, next) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.setHeader("X-PROTOCOL", "ecotrade-scraper-v3");
+  res.setHeader("X-SERVICE-VERSION", "ecotrade-locked-v4");
   next();
 });
 
 // -----------------------------------------------------
-// HEALTH CHECK
+// HEALTH
 // -----------------------------------------------------
 app.get("/health", (req, res) => {
   res.status(200).json({
@@ -33,19 +33,19 @@ app.get("/health", (req, res) => {
 app.get("/debug", (req, res) => {
   res.status(200).json({
     success: true,
-    version: "v3-locked-contract",
+    version: "v4-production-locked",
     timestamp: Date.now()
   });
 });
 
 // -----------------------------------------------------
-// BROWSER SINGLETON
+// BROWSER SINGLETON (PREVENT MEMORY LEAKS)
 // -----------------------------------------------------
-let browserInstance = null;
+let browser = null;
 
 async function getBrowser() {
-  if (!browserInstance) {
-    browserInstance = await chromium.launch({
+  if (!browser) {
+    browser = await chromium.launch({
       headless: true,
       args: [
         "--no-sandbox",
@@ -55,11 +55,11 @@ async function getBrowser() {
       ]
     });
   }
-  return browserInstance;
+  return browser;
 }
 
 // -----------------------------------------------------
-// SAFE NAVIGATION
+// SAFE NAVIGATION (ANTI TIMEOUT FIX)
 // -----------------------------------------------------
 async function safeGoto(page, url) {
   try {
@@ -70,16 +70,15 @@ async function safeGoto(page, url) {
 }
 
 // -----------------------------------------------------
-// SCRAPER CORE
+// CORE SCRAPER
 // -----------------------------------------------------
 async function scrape(url) {
-  let browser;
   let context;
 
   try {
-    browser = await getBrowser();
+    const browserInstance = await getBrowser();
 
-    context = await browser.newContext({
+    context = await browserInstance.newContext({
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
       viewport: { width: 1366, height: 768 }
@@ -119,7 +118,7 @@ async function scrape(url) {
     await context.close();
 
     // -------------------------------------------------
-    // STRICT RESPONSE CONTRACT (FINAL)
+    // FINAL NORMALISED RESPONSE CONTRACT
     // -------------------------------------------------
     return {
       success: true,
@@ -127,7 +126,7 @@ async function scrape(url) {
       data,
       meta: {
         source: "ecotrade",
-        version: "v3-locked-contract",
+        version: "v4-production-locked",
         url
       }
     };
@@ -148,7 +147,7 @@ async function scrape(url) {
 }
 
 // -----------------------------------------------------
-// API ROUTE (FINAL SAFE CONTRACT)
+// API ROUTE
 // -----------------------------------------------------
 app.post("/scrape-product", async (req, res) => {
   try {
@@ -201,5 +200,5 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 FINAL LOCKED SCRAPER v3 running on port ${PORT}`);
+  console.log(`🚀 ECOTRADE LOCKED v4 running on port ${PORT}`);
 });
