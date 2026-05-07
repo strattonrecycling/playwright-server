@@ -8,10 +8,11 @@ app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
 // -----------------------------------------------------
-// 🔒 FORCE JSON RESPONSE ALWAYS (CRITICAL)
+// 🔒 FORCE JSON ONLY (GLOBAL SAFETY LOCK)
 // -----------------------------------------------------
 app.use((req, res, next) => {
-  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader("X-API-VERSION", "locked-v2");
   next();
 });
 
@@ -19,31 +20,30 @@ app.use((req, res, next) => {
 // HEALTH
 // -----------------------------------------------------
 app.get("/health", (req, res) => {
-  res.status(200).json({
-    ok: true,
+  return res.status(200).json({
+    success: true,
     service: "catalytic-intelligence-level3",
     status: "online"
   });
 });
 
 app.get("/debug", (req, res) => {
-  res.status(200).json({
-    ok: true,
-    version: "level3-production-safe",
+  return res.status(200).json({
+    success: true,
+    version: "locked-v2",
     timestamp: Date.now()
   });
 });
 
 // -----------------------------------------------------
-// BROWSER SINGLETON
+// BROWSER SINGLETON (STABLE)
 // -----------------------------------------------------
-let browserInstance = null;
+let browserInstance;
 
 async function getBrowser() {
   if (!browserInstance) {
     browserInstance = await chromium.launch({
       headless: true,
-      ignoreHTTPSErrors: true,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
@@ -56,20 +56,18 @@ async function getBrowser() {
 }
 
 // -----------------------------------------------------
-// SAFE NAVIGATION (ANTI-TIMEOUT RESILIENCE)
+// SAFE NAVIGATION
 // -----------------------------------------------------
 async function safeGoto(page, url) {
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
-    await page.waitForTimeout(2000);
-  } catch (err) {
+  } catch {
     await page.goto(url, { waitUntil: "load", timeout: 90000 });
-    await page.waitForTimeout(4000);
   }
 }
 
 // -----------------------------------------------------
-// SCRAPER CORE (FULLY SAFE)
+// CORE SCRAPER (HARDENED)
 // -----------------------------------------------------
 async function scrape(url) {
   let browser;
@@ -86,21 +84,15 @@ async function scrape(url) {
 
     const page = await context.newPage();
 
-    await page.setExtraHTTPHeaders({
-      "accept-language": "en-US,en;q=0.9"
-    });
-
     await safeGoto(page, url);
 
-    const result = await page.evaluate(() => {
+    const data = await page.evaluate(() => {
       const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
 
       const text = clean(document.body.innerText);
-      const title =
-        clean(document.querySelector("h1")?.innerText) ||
-        clean(document.title);
+      const title = clean(document.querySelector("h1")?.innerText || document.title);
 
-      const isProduct = /\/product\//.test(location.href);
+      const isProduct = location.href.includes("/product/");
 
       const references = [...new Set(text.match(/\b\d{6,14}\b/g) || [])].slice(0, 30);
 
@@ -108,22 +100,8 @@ async function scrape(url) {
 
       const images = Array.from(document.images)
         .map(i => i.src)
-        .filter(src =>
-          src &&
-          src.includes("ecotradegroup") &&
-          !src.includes("flag") &&
-          !src.includes("logo")
-        )
+        .filter(src => src && src.includes("ecotradegroup"))
         .slice(0, 12);
-
-      const productDetails = {
-        brand: text.match(/Brand\s+([A-Za-z0-9 ]+)/i)?.[1] || null,
-        maker: text.match(/Maker\s+([A-Za-z0-9 ]+)/i)?.[1] || null,
-        type: text.match(/Product Type\s+([A-Za-z0-9 +]+)/i)?.[1] || null,
-        ref: text.match(/Ref\s+([A-Za-z0-9 ]+)/i)?.[1] || null,
-        years: text.match(/Years\s+([0-9, ]+)/i)?.[1] || null,
-        carModels: text.match(/Car Models\s+([A-Za-z0-9 -]+)/i)?.[1] || null
-      };
 
       return {
         type: isProduct ? "product" : "search",
@@ -131,37 +109,42 @@ async function scrape(url) {
         references,
         priceHints,
         images,
-        productDetails,
         preview: text.slice(0, 1500)
       };
     });
 
     await context.close();
 
+    // -------------------------------------------------
+    // STRICT RESPONSE FORMAT (NO VARIATION EVER)
+    // -------------------------------------------------
     return {
-      ok: true,
-      data: result,
+      success: true,
+      error: null,
+      data,
       meta: {
         source: "ecotrade",
-        reliability: result.references.length > 0 ? "high" : "fallback"
+        version: "locked-v2"
       }
     };
 
   } catch (err) {
     return {
-      ok: false,
-      error: "SCRAPER_FAILED",
-      message: err.message,
+      success: false,
+      error: {
+        message: err.message,
+        code: "SCRAPER_FAILED"
+      },
+      data: null,
       meta: {
-        source: "ecotrade",
-        reliability: "failed"
+        source: "ecotrade"
       }
     };
   }
 }
 
 // -----------------------------------------------------
-// 🔥 SAFE API ROUTE (NO HTML EVER LEAKS)
+// API ROUTE (100% SAFE CONTRACT)
 // -----------------------------------------------------
 app.post("/scrape-product", async (req, res) => {
   try {
@@ -169,8 +152,9 @@ app.post("/scrape-product", async (req, res) => {
 
     if (!url) {
       return res.status(400).json({
-        ok: false,
-        error: "URL_REQUIRED"
+        success: false,
+        error: { message: "URL_REQUIRED", code: "VALIDATION_ERROR" },
+        data: null
       });
     }
 
@@ -180,21 +164,21 @@ app.post("/scrape-product", async (req, res) => {
 
   } catch (err) {
     return res.status(500).json({
-      ok: false,
-      error: "INTERNAL_SERVER_ERROR",
-      message: err.message
+      success: false,
+      error: { message: err.message, code: "FATAL_ERROR" },
+      data: null
     });
   }
 });
 
 // -----------------------------------------------------
-// GLOBAL SAFETY NET (CRITICAL FOR RENDER)
+// GLOBAL SAFETY NET (NO HTML EVER)
 // -----------------------------------------------------
 app.use((err, req, res, next) => {
   return res.status(500).json({
-    ok: false,
-    error: "UNHANDLED_EXCEPTION",
-    message: err.message
+    success: false,
+    error: { message: err.message, code: "UNHANDLED_EXCEPTION" },
+    data: null
   });
 });
 
@@ -204,5 +188,5 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 Production-safe Catalytic Intelligence running on ${PORT}`);
+  console.log(`🚀 LOCKED API v2 running on port ${PORT}`);
 });
