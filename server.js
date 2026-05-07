@@ -2,7 +2,6 @@ const express = require("express");
 const { chromium } = require("playwright");
 
 const app = express();
-
 app.use(express.json({ limit: "10mb" }));
 
 // -------------------------------------
@@ -14,13 +13,13 @@ app.use((req, res, next) => {
 });
 
 // -------------------------------------
-// HEALTH
+// HEALTH CHECK
 // -------------------------------------
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
     service: "catalytic-intelligence-api",
-    status: "healthy"
+    status: "running"
   });
 });
 
@@ -30,12 +29,12 @@ app.get("/health", (req, res) => {
 app.get("/debug", (req, res) => {
   res.json({
     ok: true,
-    version: "production-v1"
+    version: "production-v2-stable"
   });
 });
 
 // -------------------------------------
-// SAFE SCRAPE CORE
+// CORE SCRAPER (PRODUCTION SAFE)
 // -------------------------------------
 async function scrape(url) {
   let browser;
@@ -45,8 +44,7 @@ async function scrape(url) {
       headless: true,
       args: [
         "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--single-process"
+        "--disable-dev-shm-usage"
       ]
     });
 
@@ -58,27 +56,33 @@ async function scrape(url) {
       timeout: 60000
     });
 
-    await page.waitForTimeout(3500);
+    // IMPORTANT: allow JS hydration (EcoTrade is dynamic)
+    await page.waitForTimeout(6000);
 
-    // ---------------------------------
+    // -------------------------------------
     // SEARCH MODE
-    // ---------------------------------
+    // -------------------------------------
     if (!url.includes("/product/")) {
       const results = await page.evaluate(() => {
         const items = [];
 
-        document.querySelectorAll("a").forEach(a => {
-          const text = (a.innerText || "").trim();
-          const href = a.href;
+        const links = Array.from(document.querySelectorAll("a"));
 
+        for (const a of links) {
+          const text = (a.innerText || "").trim();
+          const href = a.href || "";
+
+          // EcoTrade product detection (fully qualified URLs)
           if (
-            text &&
-            href &&
-            href.includes("/product/")
+            text.length > 5 &&
+            href.includes("ecotradegroup.com/en/product/")
           ) {
-            items.push({ title: text, url: href });
+            items.push({
+              title: text,
+              url: href
+            });
           }
-        });
+        }
 
         return items;
       });
@@ -88,29 +92,32 @@ async function scrape(url) {
         data: {
           type: "search",
           query: url,
-          results: results.slice(0, 25),
+          results,
           count: results.length
         }
       };
     }
 
-    // ---------------------------------
+    // -------------------------------------
     // PRODUCT MODE
-    // ---------------------------------
+    // -------------------------------------
     const product = await page.evaluate(() => {
       const text = document.body.innerText || "";
-
-      const refs = text.match(/\b\d{6,10}\b/g) || [];
 
       const title =
         document.querySelector("h1")?.innerText?.trim() ||
         document.title;
 
+      const refs = text.match(/\b\d{6,10}\b/g) || [];
+
+      const priceHints = text.match(/€\s?\d+|\$\s?\d+|R\s?\d+/g) || [];
+
       return {
         type: "product",
         title,
-        references: [...new Set(refs)].slice(0, 15),
-        preview: text.slice(0, 300)
+        references: [...new Set(refs)].slice(0, 20),
+        priceHints: [...new Set(priceHints)].slice(0, 10),
+        preview: text.slice(0, 500)
       };
     });
 
@@ -164,5 +171,5 @@ app.post("/scrape-product", async (req, res) => {
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log("PRODUCTION SCRAPER RUNNING ON", PORT);
+  console.log("Catalytic Intelligence API running on port", PORT);
 });
