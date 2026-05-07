@@ -2,15 +2,25 @@ const express = require("express");
 const { chromium } = require("playwright");
 
 const app = express();
+
 app.use(express.json({ limit: "10mb" }));
 
 // -------------------------------------
-// HEALTH CHECK
+// FORCE JSON SAFETY (CRITICAL FOR BASE44)
+// -------------------------------------
+app.use((req, res, next) => {
+  res.setHeader("Content-Type", "application/json");
+  next();
+});
+
+// -------------------------------------
+// HEALTH
 // -------------------------------------
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
-    service: "playwright-stable-v3"
+    service: "catalytic-intelligence-api",
+    status: "healthy"
   });
 });
 
@@ -20,13 +30,12 @@ app.get("/health", (req, res) => {
 app.get("/debug", (req, res) => {
   res.json({
     ok: true,
-    version: "stable-v3-no-crash"
+    version: "production-v1"
   });
 });
 
 // -------------------------------------
-// SAFE SCRAPER CORE
-// (NO PAGE OUTSIDE BROWSER CONTEXT)
+// SAFE SCRAPE CORE
 // -------------------------------------
 async function scrape(url) {
   let browser;
@@ -49,28 +58,29 @@ async function scrape(url) {
       timeout: 60000
     });
 
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(3500);
 
-    // -----------------------------
+    // ---------------------------------
     // SEARCH MODE
-    // -----------------------------
+    // ---------------------------------
     if (!url.includes("/product/")) {
       const results = await page.evaluate(() => {
-        const out = [];
+        const items = [];
 
         document.querySelectorAll("a").forEach(a => {
           const text = (a.innerText || "").trim();
           const href = a.href;
 
-          if (text && href && href.includes("/product/")) {
-            out.push({
-              title: text,
-              url: href
-            });
+          if (
+            text &&
+            href &&
+            href.includes("/product/")
+          ) {
+            items.push({ title: text, url: href });
           }
         });
 
-        return out;
+        return items;
       });
 
       return {
@@ -78,14 +88,15 @@ async function scrape(url) {
         data: {
           type: "search",
           query: url,
-          results: results.slice(0, 25)
+          results: results.slice(0, 25),
+          count: results.length
         }
       };
     }
 
-    // -----------------------------
+    // ---------------------------------
     // PRODUCT MODE
-    // -----------------------------
+    // ---------------------------------
     const product = await page.evaluate(() => {
       const text = document.body.innerText || "";
 
@@ -122,21 +133,29 @@ async function scrape(url) {
 }
 
 // -------------------------------------
-// API ROUTE
+// API ENDPOINT
 // -------------------------------------
 app.post("/scrape-product", async (req, res) => {
-  const { url } = req.body;
+  try {
+    const { url } = req.body;
 
-  if (!url) {
+    if (!url) {
+      return res.json({
+        ok: false,
+        error: "Missing URL"
+      });
+    }
+
+    const result = await scrape(url);
+
+    return res.json(result);
+
+  } catch (err) {
     return res.json({
       ok: false,
-      error: "Missing URL"
+      error: err.message
     });
   }
-
-  const result = await scrape(url);
-
-  return res.json(result);
 });
 
 // -------------------------------------
@@ -145,5 +164,5 @@ app.post("/scrape-product", async (req, res) => {
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log("Stable Playwright server running on port", PORT);
+  console.log("PRODUCTION SCRAPER RUNNING ON", PORT);
 });
