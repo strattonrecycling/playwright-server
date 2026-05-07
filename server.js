@@ -2,10 +2,11 @@ const express = require("express");
 const { chromium } = require("playwright");
 
 const app = express();
-app.use(express.json());
+
+app.use(express.json({ limit: "10mb" }));
 
 // ----------------------
-// HEALTH CHECK
+// HEALTH
 // ----------------------
 app.get("/health", (req, res) => {
   res.json({
@@ -16,21 +17,12 @@ app.get("/health", (req, res) => {
 });
 
 // ----------------------
-// RENDER ENDPOINT (MAIN FIX)
+// CORE RENDER FUNCTION
 // ----------------------
-app.post("/render", async (req, res) => {
+async function renderPage(url) {
   let browser;
 
   try {
-    const { url } = req.body;
-
-    if (!url) {
-      return res.status(400).json({
-        status: "error",
-        message: "Missing url"
-      });
-    }
-
     browser = await chromium.launch({
       headless: true,
       args: [
@@ -40,11 +32,8 @@ app.post("/render", async (req, res) => {
       ]
     });
 
-    const page = await browser.newPage();
-
-    // Set realistic browser context (helps with blocked pages)
-    await page.setExtraHTTPHeaders({
-      "User-Agent":
+    const page = await browser.newPage({
+      userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
     });
 
@@ -53,10 +42,10 @@ app.post("/render", async (req, res) => {
       timeout: 60000
     });
 
-    // allow JS rendering
+    // Allow JS rendering
     await page.waitForTimeout(3000);
 
-    // trigger lazy-loaded content
+    // Trigger lazy-loaded content
     await page.evaluate(() => {
       window.scrollTo(0, document.body.scrollHeight);
     });
@@ -67,15 +56,89 @@ app.post("/render", async (req, res) => {
 
     await browser.close();
 
-    return res.json({
-      status: "success",
-      url,
+    return {
+      success: true,
       html
-    });
+    };
 
   } catch (err) {
     if (browser) await browser.close();
 
+    return {
+      success: false,
+      error: err.message
+    };
+  }
+}
+
+// ----------------------
+// /render
+// ----------------------
+app.post("/render", async (req, res) => {
+  try {
+    const { url } = req.body;
+
+    if (!url) {
+      return res.status(400).json({
+        status: "error",
+        message: "Missing url"
+      });
+    }
+
+    const result = await renderPage(url);
+
+    if (!result.success) {
+      return res.status(500).json({
+        status: "error",
+        message: result.error
+      });
+    }
+
+    return res.json({
+      status: "success",
+      url,
+      html: result.html
+    });
+
+  } catch (err) {
+    return res.status(500).json({
+      status: "error",
+      message: err.message
+    });
+  }
+});
+
+// ----------------------
+// /scrape-product
+// COMPATIBILITY ROUTE
+// ----------------------
+app.post("/scrape-product", async (req, res) => {
+  try {
+    const { url } = req.body;
+
+    if (!url) {
+      return res.status(400).json({
+        status: "error",
+        message: "Missing url"
+      });
+    }
+
+    const result = await renderPage(url);
+
+    if (!result.success) {
+      return res.status(500).json({
+        status: "error",
+        message: result.error
+      });
+    }
+
+    return res.json({
+      status: "success",
+      url,
+      html: result.html
+    });
+
+  } catch (err) {
     return res.status(500).json({
       status: "error",
       message: err.message
