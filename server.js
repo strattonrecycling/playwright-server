@@ -6,7 +6,7 @@ const app = express();
 app.use(express.json({ limit: "10mb" }));
 
 // -------------------------------------
-// FORCE JSON OUTPUT ONLY
+// FORCE JSON RESPONSES ONLY
 // -------------------------------------
 app.use((req, res, next) => {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -14,7 +14,7 @@ app.use((req, res, next) => {
 });
 
 // -------------------------------------
-// GLOBAL HTML BLOCKER
+// GLOBAL SAFETY NET (NO HTML LEAKS)
 // -------------------------------------
 app.use((req, res, next) => {
   const originalSend = res.send;
@@ -24,8 +24,8 @@ app.use((req, res, next) => {
       if (typeof body === "string" && body.trim().startsWith("<!DOCTYPE")) {
         return originalSend.call(this, JSON.stringify({
           ok: false,
-          error: "HTML response blocked",
-          hint: "invalid route or upstream crash"
+          error: "HTML blocked at gateway",
+          hint: "invalid route or crash response"
         }));
       }
     } catch {}
@@ -53,7 +53,7 @@ app.get("/health", (req, res) => {
 app.get("/debug", (req, res) => {
   res.json({
     ok: true,
-    version: "v5-timeout-fixed"
+    version: "v6-js-state-extraction"
   });
 });
 
@@ -77,39 +77,36 @@ async function scrape(url) {
     const page = await context.newPage();
 
     // -------------------------------------
-    // FIXED NAVIGATION (NO NETWORKIDLE)
+    // NAVIGATION (STABLE MODE)
     // -------------------------------------
     try {
       await page.goto(url, {
         waitUntil: "domcontentloaded",
         timeout: 45000
       });
-    } catch (err) {
-      // fallback strategy (important for EcoTrade)
+    } catch {
       await page.goto(url, {
         waitUntil: "load",
         timeout: 45000
       });
     }
 
-    // IMPORTANT: hydration buffer
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(5000);
 
     // -------------------------------------
-    // SEARCH MODE
+    // SEARCH MODE (IMPROVED JS STATE EXTRACTION)
     // -------------------------------------
     if (!url.includes("/product/")) {
+
       const results = await page.evaluate(() => {
         const items = [];
 
+        // 1. Try DOM links first
         document.querySelectorAll("a").forEach(a => {
           const text = (a.innerText || "").trim();
           const href = a.href || "";
 
-          if (
-            text.length > 8 &&
-            href.includes("/product/")
-          ) {
+          if (href.includes("/product/") && text.length > 5) {
             items.push({
               title: text.slice(0, 120),
               url: href
@@ -117,6 +114,45 @@ async function scrape(url) {
           }
         });
 
+        // 2. Try script JSON extraction (React/Vue state)
+        const scripts = Array.from(document.querySelectorAll("script"));
+
+        for (const s of scripts) {
+          const txt = s.innerText || "";
+
+          if (
+            txt.includes("product") ||
+            txt.includes("results") ||
+            txt.includes("search")
+          ) {
+            try {
+              const match = txt.match(/\{.*\}/s);
+              if (!match) continue;
+
+              const json = JSON.parse(match[0]);
+
+              const possible =
+                json?.props?.pageProps?.results ||
+                json?.results ||
+                json?.data ||
+                [];
+
+              if (Array.isArray(possible)) {
+                possible.forEach(p => {
+                  if (p?.url || p?.link) {
+                    items.push({
+                      title: p.title || p.name || "product",
+                      url: p.url || p.link
+                    });
+                  }
+                });
+              }
+
+            } catch {}
+          }
+        }
+
+        // dedupe
         const seen = new Set();
         return items.filter(i => {
           if (seen.has(i.url)) return false;
@@ -131,7 +167,10 @@ async function scrape(url) {
           type: "search",
           query: url,
           results,
-          count: results.length
+          count: results.length,
+          debug: results.length === 0
+            ? "no DOM or JS-state matches found"
+            : "ok"
         }
       };
     }
@@ -146,25 +185,14 @@ async function scrape(url) {
         document.querySelector("h1")?.innerText?.trim() ||
         document.title;
 
-      const refs = text.match(/\b\d{6,10}\b/g) || [];
-
+      const references = text.match(/\b\d{6,10}\b/g) || [];
       const priceHints = text.match(/R\s?\d+|€\s?\d+|\$\s?\d+/g) || [];
-
-      let structured = false;
-
-      try {
-        structured = Array.from(document.scripts).some(s =>
-          (s.innerText || "").includes("sku") ||
-          (s.innerText || "").includes("product")
-        );
-      } catch {}
 
       return {
         type: "product",
         title,
-        references: [...new Set(refs)].slice(0, 25),
+        references: [...new Set(references)].slice(0, 25),
         priceHints: [...new Set(priceHints)].slice(0, 10),
-        structured,
         preview: text.slice(0, 600)
       };
     });
@@ -202,13 +230,6 @@ app.post("/scrape-product", async (req, res) => {
     }
 
     const result = await scrape(url);
-
-    if (!result || typeof result !== "object") {
-      return res.json({
-        ok: false,
-        error: "Invalid response from scraper"
-      });
-    }
 
     return res.json(result);
 
