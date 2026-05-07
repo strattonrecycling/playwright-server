@@ -2,12 +2,11 @@ const express = require("express");
 const { chromium } = require("playwright");
 
 const app = express();
-
 app.use(express.json({ limit: "10mb" }));
 
-// -------------------------------------
-// HEALTH CHECK
-// -------------------------------------
+// -----------------------------
+// HEALTH
+// -----------------------------
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
@@ -16,186 +15,153 @@ app.get("/health", (req, res) => {
   });
 });
 
-// -------------------------------------
-// DEBUG ROUTE (DEPLOYMENT VERIFICATION)
-// -------------------------------------
+// -----------------------------
+// DEBUG
+// -----------------------------
 app.get("/debug", (req, res) => {
   res.json({
     status: "debug-ok",
-    version: "final-stable",
+    version: "final-intelligent-scraper",
     timestamp: Date.now()
   });
 });
 
-// -------------------------------------
-// SAFE DELAY UTILITY
-// -------------------------------------
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+// -----------------------------
+// USD → ZAR CACHE (15 MIN)
+// -----------------------------
+let cachedRate = null;
+let lastFetch = 0;
 
-// -------------------------------------
-// CORE RENDER FUNCTION (STABLE MODE)
-// -------------------------------------
-async function renderPage(url) {
-  let browser = null;
+async function getUsdToZar() {
+  const now = Date.now();
+
+  if (cachedRate && now - lastFetch < 15 * 60 * 1000) {
+    return cachedRate;
+  }
+
+  try {
+    const res = await fetch("https://api.exchangerate.host/latest?base=USD&symbols=ZAR");
+    const data = await res.json();
+
+    cachedRate = data?.rates?.ZAR || 18;
+    lastFetch = now;
+
+    return cachedRate;
+  } catch {
+    return 18;
+  }
+}
+
+// -----------------------------
+// PLAYWRIGHT RENDER
+// -----------------------------
+async function render(url) {
+  let browser;
 
   try {
     browser = await chromium.launch({
       headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage"
-      ]
+      args: ["--no-sandbox", "--disable-setuid-sandbox"]
     });
 
-    const context = await browser.newContext({
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-      viewport: { width: 1366, height: 768 }
-    });
+    const page = await browser.newPage();
 
-    const page = await context.newPage();
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForTimeout(5000);
 
-    // -------------------------------------
-    // SAFE NAVIGATION (NO NETWORKIDLE)
-    // -------------------------------------
-    try {
-      await page.goto(url, {
-        waitUntil: "domcontentloaded",
-        timeout: 60000
-      });
-    } catch (err) {
-      // fallback retry
-      await page.goto(url, { timeout: 60000 });
-    }
+    const html = await page.content();
 
-    // -------------------------------------
-    // STABLE RENDER WAIT
-    // -------------------------------------
-    await delay(8000);
-
-    try {
-      await page.evaluate(() => {
-        window.scrollTo(0, document.body.scrollHeight);
-      });
-    } catch {}
-
-    await delay(3000);
-
-    // -------------------------------------
-    // SAFE HTML EXTRACTION
-    // -------------------------------------
-    let html = "";
-
-    try {
-      html = await page.content();
-    } catch (err) {
-      return {
-        success: false,
-        error: "Failed to extract HTML",
-        details: err.message
-      };
-    }
-
-    return {
-      success: true,
-      html
-    };
-
-  } catch (err) {
-    return {
-      success: false,
-      error: err.message,
-      stack: err.stack
-    };
-
+    return html;
   } finally {
-    if (browser) {
-      try {
-        await browser.close();
-      } catch {}
-    }
+    if (browser) await browser.close();
   }
 }
 
-// -------------------------------------
-// SCRAPE ENDPOINT (ZERO-500 GUARANTEE)
-// -------------------------------------
+// -----------------------------
+// MODE DETECTION
+// -----------------------------
+function getMode(url) {
+  if (url.includes("/search?query=")) return "search";
+  if (url.includes("/product/")) return "product";
+  return "generic";
+}
+
+// -----------------------------
+// SEARCH PARSER
+// -----------------------------
+function parseSearch(html, baseUrl) {
+  const links = [...html.matchAll(/href="(\/en\/product\/[^"]+)"/g)];
+
+  const results = links.map((m) => ({
+    title: "Product",
+    url: baseUrl + m[1]
+  }));
+
+  return {
+    type: "search",
+    results: results.slice(0, 10)
+  };
+}
+
+// -----------------------------
+// PRODUCT PARSER (SAFE)
+// -----------------------------
+function extractField(html, label) {
+  const regex = new RegExp(`<th[^>]*>${label}<\/th>[\\s\\S]*?<td[^>]*>([\\s\\S]*?)<\/td>`, "i");
+  const match = html.match(regex);
+  return match ? match[1].replace(/<[^>]*>/g, "").trim() : null;
+}
+
+// -----------------------------
+// SCRAPE ENDPOINT
+// -----------------------------
 app.post("/scrape-product", async (req, res) => {
   try {
     const { url } = req.body;
+    if (!url) return res.json({ status: "error", message: "missing url" });
 
-    if (!url) {
-      return res.status(200).json({
-        status: "error",
-        error: "Missing URL",
-        html: null
-      });
+    const html = await render(url);
+    const mode = getMode(url);
+
+    // -----------------------------
+    // SEARCH MODE
+    // -----------------------------
+    if (mode === "search") {
+      return res.json(parseSearch(html, "https://www.ecotradegroup.com"));
     }
 
-    const result = await renderPage(url);
+    // -----------------------------
+    // PRODUCT MODE
+    // -----------------------------
+    const usdText = extractField(html, "Price");
+    const usd = usdText ? parseFloat(usdText.replace(/[^0-9.]/g, "")) : 0;
 
-    if (!result.success) {
-      return res.status(200).json({
-        status: "error",
-        url,
-        error: result.error,
-        details: result.details || null,
-        html: null
-      });
-    }
+    const rate = await getUsdToZar();
 
-    return res.status(200).json({
-      status: "success",
+    return res.json({
+      type: "product",
       url,
-      html: result.html
+      brand: extractField(html, "Brand") || "Unknown",
+      productType: extractField(html, "Product Type") || "Unknown",
+      ref: extractField(html, "Ref") || "Unknown",
+      years: extractField(html, "Years") || "Unknown",
+      carModels: extractField(html, "Car Models") || "Unknown",
+      price: {
+        usd,
+        zar: Math.round(usd * rate)
+      }
     });
 
   } catch (err) {
-    // absolute safety net
-    return res.status(200).json({
-      status: "fatal-error",
-      error: err.message,
-      html: null
-    });
-  }
-});
-
-// -------------------------------------
-// OPTIONAL RENDER ENDPOINT
-// -------------------------------------
-app.post("/render", async (req, res) => {
-  try {
-    const { url } = req.body;
-
-    const result = await renderPage(url);
-
-    return res.status(200).json(result);
-
-  } catch (err) {
-    return res.status(200).json({
+    return res.json({
       status: "error",
-      error: err.message
+      message: err.message
     });
   }
 });
 
-// -------------------------------------
-// GLOBAL SAFETY NETS
-// -------------------------------------
-process.on("uncaughtException", (err) => {
-  console.error("UNCAUGHT EXCEPTION:", err);
-});
-
-process.on("unhandledRejection", (err) => {
-  console.error("UNHANDLED REJECTION:", err);
-});
-
-// -------------------------------------
-// START SERVER
-// -------------------------------------
+// -----------------------------
 const PORT = process.env.PORT || 10000;
-
 app.listen(PORT, () => {
-  console.log(`Playwright server running on port ${PORT}`);
+  console.log("Playwright server running on port", PORT);
 });
