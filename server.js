@@ -21,7 +21,7 @@ app.get("/health", (req, res) => {
 app.get("/debug", (req, res) => {
   res.json({
     status: "ok",
-    version: "stable-json-api",
+    version: "strict-json-v2",
     timestamp: Date.now()
   });
 });
@@ -32,7 +32,7 @@ app.get("/debug", (req, res) => {
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
 // -------------------------------------
-// PLAYWRIGHT CORE
+// PLAYWRIGHT CORE (SAFE)
 // -------------------------------------
 async function renderPage(url) {
   let browser;
@@ -55,28 +55,45 @@ async function renderPage(url) {
       timeout: 60000
     });
 
-    await delay(4000);
+    await delay(3000);
 
     const html = await page.content();
 
-    return { ok: true, html };
+    return {
+      ok: true,
+      html: html || ""
+    };
 
   } catch (err) {
-    return { ok: false, error: err.message };
+    return {
+      ok: false,
+      error: err.message
+    };
+
   } finally {
-    if (browser) await browser.close().catch(() => {});
+    if (browser) {
+      try { await browser.close(); } catch {}
+    }
   }
 }
 
 // -------------------------------------
-// SIMPLE HTML PARSERS (SAFE FALLBACKS)
+// SAFE RESPONSE NORMALISER
+// -------------------------------------
+function safeResults(results) {
+  if (!Array.isArray(results)) return [];
+  return results;
+}
+
+// -------------------------------------
+// SIMPLE PARSERS (NO HTML LEAKS)
 // -------------------------------------
 function extractSearch(html, url) {
-  // Basic safe fallback (prevents crashes)
   return {
     type: "search",
     query: url,
-    results: []
+    results: safeResults([]),
+    count: 0
   };
 }
 
@@ -92,7 +109,7 @@ function extractProduct(html, url) {
 }
 
 // -------------------------------------
-// SCRAPE ENDPOINT (BASE44 SAFE)
+// MAIN ENDPOINT (100% JSON SAFE)
 // -------------------------------------
 app.post("/scrape-product", async (req, res) => {
   try {
@@ -100,7 +117,7 @@ app.post("/scrape-product", async (req, res) => {
 
     if (!url) {
       return res.status(200).json({
-        status: "error",
+        type: "error",
         message: "Missing URL"
       });
     }
@@ -109,43 +126,55 @@ app.post("/scrape-product", async (req, res) => {
 
     if (!result.ok) {
       return res.status(200).json({
-        status: "error",
+        type: "error",
         message: result.error
       });
     }
 
     const html = result.html || "";
 
+    // IMPORTANT: NEVER RETURN HTML
     const isSearch = url.includes("search");
 
     if (isSearch) {
-      return res.status(200).json(extractSearch(html, url));
+      const data = extractSearch(html, url);
+
+      return res.status(200).json({
+        ...data,
+        results: safeResults(data.results)
+      });
     }
 
-    return res.status(200).json(extractProduct(html, url));
+    const product = extractProduct(html, url);
+
+    return res.status(200).json(product);
 
   } catch (err) {
     return res.status(200).json({
-      status: "error",
+      type: "error",
       message: err.message
     });
   }
 });
 
 // -------------------------------------
-// RENDER ENDPOINT (OPTIONAL)
+// OPTIONAL RAW RENDER (DEBUG ONLY)
 // -------------------------------------
 app.post("/render", async (req, res) => {
   try {
     const { url } = req.body;
+
     const result = await renderPage(url);
 
-    return res.status(200).json(result);
+    return res.status(200).json({
+      ok: result.ok,
+      error: result.error || null
+    });
 
   } catch (err) {
     return res.status(200).json({
-      status: "error",
-      message: err.message
+      ok: false,
+      error: err.message
     });
   }
 });
@@ -154,6 +183,7 @@ app.post("/render", async (req, res) => {
 // START SERVER
 // -------------------------------------
 const PORT = process.env.PORT || 10000;
+
 app.listen(PORT, () => {
   console.log("Playwright server running on port", PORT);
 });
