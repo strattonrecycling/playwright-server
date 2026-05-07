@@ -5,9 +5,9 @@ const app = express();
 
 app.use(express.json({ limit: "10mb" }));
 
-// ----------------------
+// -----------------------------------
 // HEALTH
-// ----------------------
+// -----------------------------------
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
@@ -16,43 +16,67 @@ app.get("/health", (req, res) => {
   });
 });
 
-// ----------------------
+// -----------------------------------
+// SAFE DELAY
+// -----------------------------------
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// -----------------------------------
 // CORE RENDER FUNCTION
-// ----------------------
+// -----------------------------------
 async function renderPage(url) {
   let browser;
 
   try {
+    console.log("Launching Chromium...");
+
     browser = await chromium.launch({
       headless: true,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage"
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled"
       ]
     });
 
-    const page = await browser.newPage({
+    console.log("Creating page...");
+
+    const context = await browser.newContext({
       userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+      viewport: {
+        width: 1366,
+        height: 768
+      }
     });
+
+    const page = await context.newPage();
+
+    console.log("Opening URL:", url);
 
     await page.goto(url, {
-      waitUntil: "networkidle",
-      timeout: 60000
+      waitUntil: "domcontentloaded",
+      timeout: 90000
     });
 
-    // Allow JS rendering
-    await page.waitForTimeout(3000);
+    // allow JS rendering
+    await delay(5000);
 
-    // Trigger lazy-loaded content
+    // scroll once
     await page.evaluate(() => {
       window.scrollTo(0, document.body.scrollHeight);
     });
 
-    await page.waitForTimeout(1500);
+    await delay(2000);
+
+    console.log("Extracting HTML...");
 
     const html = await page.content();
+
+    console.log("HTML length:", html.length);
 
     await browser.close();
 
@@ -62,18 +86,25 @@ async function renderPage(url) {
     };
 
   } catch (err) {
-    if (browser) await browser.close();
+    console.error("PLAYWRIGHT ERROR:", err);
+
+    try {
+      if (browser) {
+        await browser.close();
+      }
+    } catch (e) {}
 
     return {
       success: false,
-      error: err.message
+      error: err.message,
+      stack: err.stack
     };
   }
 }
 
-// ----------------------
+// -----------------------------------
 // /render
-// ----------------------
+// -----------------------------------
 app.post("/render", async (req, res) => {
   try {
     const { url } = req.body;
@@ -90,7 +121,8 @@ app.post("/render", async (req, res) => {
     if (!result.success) {
       return res.status(500).json({
         status: "error",
-        message: result.error
+        message: result.error,
+        stack: result.stack
       });
     }
 
@@ -102,16 +134,15 @@ app.post("/render", async (req, res) => {
 
   } catch (err) {
     return res.status(500).json({
-      status: "error",
+      status: "fatal",
       message: err.message
     });
   }
 });
 
-// ----------------------
+// -----------------------------------
 // /scrape-product
-// COMPATIBILITY ROUTE
-// ----------------------
+// -----------------------------------
 app.post("/scrape-product", async (req, res) => {
   try {
     const { url } = req.body;
@@ -128,7 +159,8 @@ app.post("/scrape-product", async (req, res) => {
     if (!result.success) {
       return res.status(500).json({
         status: "error",
-        message: result.error
+        message: result.error,
+        stack: result.stack
       });
     }
 
@@ -140,15 +172,15 @@ app.post("/scrape-product", async (req, res) => {
 
   } catch (err) {
     return res.status(500).json({
-      status: "error",
+      status: "fatal",
       message: err.message
     });
   }
 });
 
-// ----------------------
+// -----------------------------------
 // START SERVER
-// ----------------------
+// -----------------------------------
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
