@@ -5,9 +5,9 @@ const app = express();
 
 app.use(express.json({ limit: "10mb" }));
 
-// -----------------------------------
-// HEALTH
-// -----------------------------------
+// -------------------------------------
+// HEALTH CHECK
+// -------------------------------------
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
@@ -16,69 +16,86 @@ app.get("/health", (req, res) => {
   });
 });
 
-// -----------------------------------
-// SAFE DELAY
-// -----------------------------------
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+// -------------------------------------
+// DEBUG ROUTE (DEPLOYMENT VERIFICATION)
+// -------------------------------------
+app.get("/debug", (req, res) => {
+  res.json({
+    status: "debug-ok",
+    version: "final-stable",
+    timestamp: Date.now()
+  });
+});
 
-// -----------------------------------
-// CORE RENDER FUNCTION
-// -----------------------------------
+// -------------------------------------
+// SAFE DELAY UTILITY
+// -------------------------------------
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// -------------------------------------
+// CORE RENDER FUNCTION (STABLE MODE)
+// -------------------------------------
 async function renderPage(url) {
-  let browser;
+  let browser = null;
 
   try {
-    console.log("Launching Chromium...");
-
     browser = await chromium.launch({
       headless: true,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-blink-features=AutomationControlled"
+        "--disable-dev-shm-usage"
       ]
     });
-
-    console.log("Creating page...");
 
     const context = await browser.newContext({
       userAgent:
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-      viewport: {
-        width: 1366,
-        height: 768
-      }
+      viewport: { width: 1366, height: 768 }
     });
 
     const page = await context.newPage();
 
-    console.log("Opening URL:", url);
+    // -------------------------------------
+    // SAFE NAVIGATION (NO NETWORKIDLE)
+    // -------------------------------------
+    try {
+      await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: 60000
+      });
+    } catch (err) {
+      // fallback retry
+      await page.goto(url, { timeout: 60000 });
+    }
 
-    await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: 90000
-    });
+    // -------------------------------------
+    // STABLE RENDER WAIT
+    // -------------------------------------
+    await delay(8000);
 
-    // allow JS rendering
-    await delay(5000);
+    try {
+      await page.evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight);
+      });
+    } catch {}
 
-    // scroll once
-    await page.evaluate(() => {
-      window.scrollTo(0, document.body.scrollHeight);
-    });
+    await delay(3000);
 
-    await delay(2000);
+    // -------------------------------------
+    // SAFE HTML EXTRACTION
+    // -------------------------------------
+    let html = "";
 
-    console.log("Extracting HTML...");
-
-    const html = await page.content();
-
-    console.log("HTML length:", html.length);
-
-    await browser.close();
+    try {
+      html = await page.content();
+    } catch (err) {
+      return {
+        success: false,
+        error: "Failed to extract HTML",
+        details: err.message
+      };
+    }
 
     return {
       success: true,
@@ -86,101 +103,97 @@ async function renderPage(url) {
     };
 
   } catch (err) {
-    console.error("PLAYWRIGHT ERROR:", err);
-
-    try {
-      if (browser) {
-        await browser.close();
-      }
-    } catch (e) {}
-
     return {
       success: false,
       error: err.message,
       stack: err.stack
     };
+
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {}
+    }
   }
 }
 
-// -----------------------------------
-// /render
-// -----------------------------------
-app.post("/render", async (req, res) => {
-  try {
-    const { url } = req.body;
-
-    if (!url) {
-      return res.status(400).json({
-        status: "error",
-        message: "Missing url"
-      });
-    }
-
-    const result = await renderPage(url);
-
-    if (!result.success) {
-      return res.status(500).json({
-        status: "error",
-        message: result.error,
-        stack: result.stack
-      });
-    }
-
-    return res.json({
-      status: "success",
-      url,
-      html: result.html
-    });
-
-  } catch (err) {
-    return res.status(500).json({
-      status: "fatal",
-      message: err.message
-    });
-  }
-});
-
-// -----------------------------------
-// /scrape-product
-// -----------------------------------
+// -------------------------------------
+// SCRAPE ENDPOINT (ZERO-500 GUARANTEE)
+// -------------------------------------
 app.post("/scrape-product", async (req, res) => {
   try {
     const { url } = req.body;
 
     if (!url) {
-      return res.status(400).json({
+      return res.status(200).json({
         status: "error",
-        message: "Missing url"
+        error: "Missing URL",
+        html: null
       });
     }
 
     const result = await renderPage(url);
 
     if (!result.success) {
-      return res.status(500).json({
+      return res.status(200).json({
         status: "error",
-        message: result.error,
-        stack: result.stack
+        url,
+        error: result.error,
+        details: result.details || null,
+        html: null
       });
     }
 
-    return res.json({
+    return res.status(200).json({
       status: "success",
       url,
       html: result.html
     });
 
   } catch (err) {
-    return res.status(500).json({
-      status: "fatal",
-      message: err.message
+    // absolute safety net
+    return res.status(200).json({
+      status: "fatal-error",
+      error: err.message,
+      html: null
     });
   }
 });
 
-// -----------------------------------
+// -------------------------------------
+// OPTIONAL RENDER ENDPOINT
+// -------------------------------------
+app.post("/render", async (req, res) => {
+  try {
+    const { url } = req.body;
+
+    const result = await renderPage(url);
+
+    return res.status(200).json(result);
+
+  } catch (err) {
+    return res.status(200).json({
+      status: "error",
+      error: err.message
+    });
+  }
+});
+
+// -------------------------------------
+// GLOBAL SAFETY NETS
+// -------------------------------------
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION:", err);
+});
+
+process.on("unhandledRejection", (err) => {
+  console.error("UNHANDLED REJECTION:", err);
+});
+
+// -------------------------------------
 // START SERVER
-// -----------------------------------
+// -------------------------------------
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
