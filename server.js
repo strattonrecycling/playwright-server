@@ -5,21 +5,13 @@ const app = express();
 app.use(express.json({ limit: "10mb" }));
 
 // -------------------------------------
-// HARD JSON SAFETY
-// -------------------------------------
-app.use((req, res, next) => {
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  next();
-});
-
-// -------------------------------------
 // HEALTH
 // -------------------------------------
 app.get("/health", (req, res) => {
   res.json({
-    status: "ok",
-    service: "catalytic-intelligence-v4",
-    uptime: process.uptime()
+    ok: true,
+    service: "playwright-server",
+    status: "running"
   });
 });
 
@@ -28,14 +20,13 @@ app.get("/health", (req, res) => {
 // -------------------------------------
 app.get("/debug", (req, res) => {
   res.json({
-    status: "ok",
-    version: "v4-router-extractor",
-    timestamp: Date.now()
+    ok: true,
+    version: "base44-stable-v1"
   });
 });
 
 // -------------------------------------
-// PLAYWRIGHT CORE
+// CORE BROWSER FUNCTION
 // -------------------------------------
 async function loadPage(url) {
   let browser;
@@ -45,26 +36,23 @@ async function loadPage(url) {
       headless: true,
       args: [
         "--no-sandbox",
-        "--disable-setuid-sandbox",
         "--disable-dev-shm-usage"
       ]
     });
 
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    const page = await browser.newPage();
 
     await page.goto(url, {
       waitUntil: "domcontentloaded",
       timeout: 60000
     });
 
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(5000);
 
     return { ok: true, page };
 
   } catch (err) {
     return { ok: false, error: err.message };
-
   } finally {
     if (browser) await browser.close().catch(() => {});
   }
@@ -74,146 +62,111 @@ async function loadPage(url) {
 // SEARCH EXTRACTOR
 // -------------------------------------
 async function extractSearch(page, url) {
-  const results = await page.evaluate(() => {
-    const items = [];
+  return await page.evaluate(() => {
+    const results = [];
 
     document.querySelectorAll("a").forEach(a => {
-      const title = a.innerText?.trim();
+      const text = a.innerText?.trim();
       const href = a.href;
 
       if (
-        title &&
+        text &&
         href &&
-        title.length > 6 &&
         href.includes("/product/")
       ) {
-        items.push({ title, url: href });
+        results.push({
+          title: text,
+          url: href
+        });
       }
     });
 
-    return items;
-  });
-
-  return {
+    return results;
+  }).then(results => ({
     type: "search",
     query: url,
-    results: results.slice(0, 30),
+    results: results.slice(0, 25),
     count: results.length
-  };
+  }));
 }
 
 // -------------------------------------
-// PRODUCT EXTRACTOR (REAL STRUCTURE)
+// PRODUCT EXTRACTOR
 // -------------------------------------
-async function extractProduct(page, url) {
-  const data = await page.evaluate(() => {
+async function extractProduct(page) {
+  return await page.evaluate(() => {
     const text = document.body.innerText || "";
+
+    const refs = text.match(/\b\d{6,10}\b/g) || [];
 
     const title =
       document.querySelector("h1")?.innerText?.trim() ||
       document.title;
 
-    // OEM / reference detection (6–10 digit codes)
-    const refs = text.match(/\b\d{6,10}\b/g) || [];
-
-    // try to find brand from breadcrumb or title
-    const brandGuess =
-      document.querySelector(".breadcrumb")?.innerText?.split("\n")[1] ||
-      null;
-
     return {
+      type: "product",
       title,
-      brand: brandGuess,
       references: [...new Set(refs)].slice(0, 15),
-      preview: text.slice(0, 400)
+      preview: text.slice(0, 250)
     };
   });
-
-  return {
-    type: "product",
-    url,
-    ...data
-  };
 }
 
 // -------------------------------------
-// SAFE JSON WRAPPER
-// -------------------------------------
-function safe(obj) {
-  try {
-    return JSON.parse(JSON.stringify(obj));
-  } catch {
-    return {
-      type: "error",
-      message: "Serialization failure"
-    };
-  }
-}
-
-// -------------------------------------
-// MAIN ROUTE (FIXED ROUTING LOGIC)
+// MAIN ROUTE (STRICT CONTRACT)
 // -------------------------------------
 app.post("/scrape-product", async (req, res) => {
   try {
     const { url } = req.body;
 
     if (!url) {
-      return res.status(200).json({
-        type: "error",
-        message: "Missing URL"
+      return res.json({
+        ok: false,
+        error: "Missing URL"
       });
     }
 
-    const pageResult = await loadPage(url);
+    const result = await loadPage(url);
 
-    if (!pageResult.ok) {
-      return res.status(200).json({
-        type: "error",
-        message: pageResult.error
+    if (!result.ok) {
+      return res.json({
+        ok: false,
+        error: result.error
       });
     }
 
-    const page = pageResult.page;
+    const page = result.page;
 
     let output;
 
-    // STRICT ROUTING (THIS IS KEY FIX)
+    // ROUTING LOGIC
     if (url.includes("/product/")) {
-      output = await extractProduct(page, url);
-    } else if (url.includes("/search")) {
-      output = await extractSearch(page, url);
+      output = await extractProduct(page);
     } else {
-      output = {
-        type: "unknown",
-        message: "Unsupported page type"
-      };
+      output = await extractSearch(page, url);
     }
 
-    return res.status(200).json(safe(output));
+    // -------------------------------------
+    // FINAL WRAPPER (BASE44 SAFE CONTRACT)
+    // -------------------------------------
+    return res.json({
+      ok: true,
+      data: output
+    });
 
   } catch (err) {
-    return res.status(200).json({
-      type: "error",
-      message: err.message
+    return res.json({
+      ok: false,
+      error: err.message
     });
   }
 });
 
 // -------------------------------------
-// GLOBAL SAFETY NET
-// -------------------------------------
-app.use((err, req, res, next) => {
-  return res.status(200).json({
-    type: "error",
-    message: err.message || "Server error"
-  });
-});
-
-// -------------------------------------
-// START
+// START SERVER
 // -------------------------------------
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log("Catalytic Intelligence v4 running on port", PORT);
+  console.log("Base44 Stable Scraper running on port", PORT);
 });
