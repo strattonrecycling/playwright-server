@@ -8,7 +8,7 @@ app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 
 // -----------------------------------------------------
-// FORCE JSON ONLY (NO HTML EVER)
+// FORCE JSON ONLY
 // -----------------------------------------------------
 app.use((req, res, next) => {
   res.setHeader("Content-Type", "application/json");
@@ -29,13 +29,13 @@ app.get("/health", (req, res) => {
 app.get("/debug", (req, res) => {
   res.json({
     ok: true,
-    version: "level3-intelligence",
+    version: "level3-fixed-playwright",
     timestamp: Date.now()
   });
 });
 
 // -----------------------------------------------------
-// BROWSER SINGLETON (IMPORTANT UPGRADE)
+// BROWSER SINGLETON
 // -----------------------------------------------------
 let browserInstance = null;
 
@@ -56,38 +56,39 @@ async function getBrowser() {
 }
 
 // -----------------------------------------------------
-// SMART PAGE LOADER (ANTI-BLOCK LAYER)
+// SAFE NAVIGATION
 // -----------------------------------------------------
 async function safeGoto(page, url) {
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     await page.waitForTimeout(2000);
   } catch (e) {
-    // retry with longer wait (EcoTrade sometimes delays hydration)
     await page.goto(url, { waitUntil: "load", timeout: 90000 });
     await page.waitForTimeout(4000);
   }
 }
 
 // -----------------------------------------------------
-// CORE SCRAPER
+// SCRAPER CORE (FIXED PLAYWRIGHT CONTEXT ISSUE)
 // -----------------------------------------------------
 async function scrape(url) {
   let browser;
 
   try {
     browser = await getBrowser();
-    const page = await browser.newPage();
 
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36"
-    );
+    // ✅ FIX: use context instead of page.setUserAgent (CRITICAL FIX)
+    const context = await browser.newContext({
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
+      viewport: { width: 1366, height: 768 }
+    });
+
+    const page = await context.newPage();
 
     await page.setExtraHTTPHeaders({
       "accept-language": "en-US,en;q=0.9"
     });
-
-    await page.setViewportSize({ width: 1366, height: 768 });
 
     await safeGoto(page, url);
 
@@ -95,11 +96,9 @@ async function scrape(url) {
       const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
 
       const text = clean(document.body.innerText);
-      const title = clean(
-        document.querySelector("h1")?.innerText ||
-        document.querySelector("[class*='title']")?.innerText ||
-        document.title
-      );
+      const title =
+        clean(document.querySelector("h1")?.innerText) ||
+        clean(document.title);
 
       const isProduct = /\/product\//.test(location.href);
 
@@ -117,7 +116,6 @@ async function scrape(url) {
         )
         .slice(0, 12);
 
-      // PRODUCT EXTRACTION
       const productDetails = {
         brand: text.match(/Brand\s+([A-Za-z0-9 ]+)/i)?.[1],
         maker: text.match(/Maker\s+([A-Za-z0-9 ]+)/i)?.[1],
@@ -138,7 +136,7 @@ async function scrape(url) {
       };
     });
 
-    await page.close();
+    await context.close(); // important cleanup
 
     return {
       ok: true,
@@ -176,7 +174,7 @@ app.post("/scrape-product", async (req, res) => {
 });
 
 // -----------------------------------------------------
-// GLOBAL SAFETY NET
+// GLOBAL ERROR HANDLER
 // -----------------------------------------------------
 app.use((err, req, res, next) => {
   console.error(err);
@@ -188,10 +186,10 @@ app.use((err, req, res, next) => {
 });
 
 // -----------------------------------------------------
-// START
+// START SERVER
 // -----------------------------------------------------
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 Level 3 Intelligence API running on ${PORT}`);
+  console.log(`🚀 Catalytic Intelligence Level 3 FIXED running on ${PORT}`);
 });
