@@ -10,7 +10,7 @@ app.use(express.json({ limit: "10mb" }));
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
-    service: "playwright-server",
+    service: "catalytic-intelligence-api",
     uptime: process.uptime()
   });
 });
@@ -21,20 +21,15 @@ app.get("/health", (req, res) => {
 app.get("/debug", (req, res) => {
   res.json({
     status: "ok",
-    version: "strict-json-v2",
+    version: "catalytic-intelligence-v1",
     timestamp: Date.now()
   });
 });
 
 // -------------------------------------
-// SAFE DELAY
+// PLAYWRIGHT CORE
 // -------------------------------------
-const delay = (ms) => new Promise(r => setTimeout(r, ms));
-
-// -------------------------------------
-// PLAYWRIGHT CORE (SAFE)
-// -------------------------------------
-async function renderPage(url) {
+async function fetchPage(url) {
   let browser;
 
   try {
@@ -55,61 +50,78 @@ async function renderPage(url) {
       timeout: 60000
     });
 
-    await delay(3000);
+    await page.waitForTimeout(3000);
 
-    const html = await page.content();
-
-    return {
-      ok: true,
-      html: html || ""
-    };
+    return { ok: true, page };
 
   } catch (err) {
-    return {
-      ok: false,
-      error: err.message
-    };
+    return { ok: false, error: err.message };
 
   } finally {
-    if (browser) {
-      try { await browser.close(); } catch {}
-    }
+    if (browser) await browser.close().catch(() => {});
   }
 }
 
 // -------------------------------------
-// SAFE RESPONSE NORMALISER
+// SEARCH EXTRACTION (REAL)
 // -------------------------------------
-function safeResults(results) {
-  if (!Array.isArray(results)) return [];
-  return results;
-}
+async function extractSearch(page, url) {
+  const results = await page.evaluate(() => {
+    const items = [];
 
-// -------------------------------------
-// SIMPLE PARSERS (NO HTML LEAKS)
-// -------------------------------------
-function extractSearch(html, url) {
+    document.querySelectorAll("a").forEach(a => {
+      const text = a.innerText?.trim();
+      const href = a.href;
+
+      if (text && href && text.length > 8 && href.includes("ecotradegroup")) {
+        items.push({
+          title: text,
+          url: href
+        });
+      }
+    });
+
+    return items;
+  });
+
   return {
     type: "search",
     query: url,
-    results: safeResults([]),
-    count: 0
-  };
-}
-
-function extractProduct(html, url) {
-  return {
-    type: "product",
-    url,
-    title: null,
-    reference: null,
-    brand: null,
-    price: null
+    results: results.slice(0, 25),
+    count: results.length
   };
 }
 
 // -------------------------------------
-// MAIN ENDPOINT (100% JSON SAFE)
+// PRODUCT EXTRACTION (REAL)
+// -------------------------------------
+async function extractProduct(page, url) {
+  const data = await page.evaluate(() => {
+    const text = document.body.innerText;
+
+    // Try to detect reference numbers (OEM / cat codes)
+    const refMatch = text.match(/\b\d{6,10}\b/g);
+
+    const title =
+      document.querySelector("h1")?.innerText?.trim() ||
+      document.title;
+
+    return {
+      title,
+      reference: refMatch ? refMatch[0] : null,
+      rawPreview: text.slice(0, 300)
+    };
+  });
+
+  return {
+    type: "product",
+    url,
+    ...data
+  };
+}
+
+// -------------------------------------
+// MAIN ENDPOINT
 // -------------------------------------
 app.post("/scrape-product", async (req, res) => {
   try {
@@ -122,7 +134,7 @@ app.post("/scrape-product", async (req, res) => {
       });
     }
 
-    const result = await renderPage(url);
+    const result = await fetchPage(url);
 
     if (!result.ok) {
       return res.status(200).json({
@@ -131,22 +143,16 @@ app.post("/scrape-product", async (req, res) => {
       });
     }
 
-    const html = result.html || "";
+    const page = result.page;
 
-    // IMPORTANT: NEVER RETURN HTML
     const isSearch = url.includes("search");
 
     if (isSearch) {
-      const data = extractSearch(html, url);
-
-      return res.status(200).json({
-        ...data,
-        results: safeResults(data.results)
-      });
+      const data = await extractSearch(page, url);
+      return res.status(200).json(data);
     }
 
-    const product = extractProduct(html, url);
-
+    const product = await extractProduct(page, url);
     return res.status(200).json(product);
 
   } catch (err) {
@@ -158,32 +164,10 @@ app.post("/scrape-product", async (req, res) => {
 });
 
 // -------------------------------------
-// OPTIONAL RAW RENDER (DEBUG ONLY)
-// -------------------------------------
-app.post("/render", async (req, res) => {
-  try {
-    const { url } = req.body;
-
-    const result = await renderPage(url);
-
-    return res.status(200).json({
-      ok: result.ok,
-      error: result.error || null
-    });
-
-  } catch (err) {
-    return res.status(200).json({
-      ok: false,
-      error: err.message
-    });
-  }
-});
-
-// -------------------------------------
-// START SERVER
+// START
 // -------------------------------------
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log("Playwright server running on port", PORT);
+  console.log("Catalytic Intelligence API running on port", PORT);
 });
