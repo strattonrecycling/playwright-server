@@ -306,16 +306,63 @@ app.post("/start-manual-login", async (req, res) => {
     });
 
     const page = await context.newPage();
-    await page.goto("https://www.ecotradegroup.com/en/login", { waitUntil: "domcontentloaded", timeout: 60000 });
-    await page.waitForTimeout(2000);
+    console.log("[Login] Opening EcoTrade login page...");
+
+await page.goto(
+  "https://www.ecotradegroup.com/en/login",
+  {
+    waitUntil: "networkidle",
+    timeout: 90000
+  }
+);
+
+await page.waitForSelector("#username", {
+  timeout: 30000
+});
+
+await page.fill("#username", ECOTRADE_EMAIL);
+
+await page.waitForSelector("#password", {
+  timeout: 30000
+});
+
+await page.fill("#password", ECOTRADE_PASSWORD);
+
+console.log("[Login] Credentials entered");
+
+await page.click(
+  'button[type="submit"], input[type="submit"]'
+);
+
+await page.waitForTimeout(5000);
+
+try {
+  await page.waitForURL(
+    url => !url.includes("/login"),
+    { timeout: 20000 }
+  );
+} catch (_) {}
+
+await page.waitForTimeout(3000);
+
+console.log("[Login] Current URL:", page.url());
 
     const { email, password } = req.body || {};
-    if (email || ECOTRADE_EMAIL) {
-      try { await page.fill('input[type="email"], input[name="email"]', email || ECOTRADE_EMAIL); } catch (_) {}
-    }
-    if (password || ECOTRADE_PASSWORD) {
-      try { await page.fill('input[type="password"], input[name="password"]', password || ECOTRADE_PASSWORD); } catch (_) {}
-    }
+   if (email || ECOTRADE_EMAIL) {
+  try {
+    await page.fill('#username, input[name="_username"]', email || ECOTRADE_EMAIL);
+  } catch (e) {
+    console.log("[ManualLogin] Username fill failed:", e.message);
+  }
+}
+
+if (password || ECOTRADE_PASSWORD) {
+  try {
+    await page.fill('#password, input[name="_password"]', password || ECOTRADE_PASSWORD);
+  } catch (e) {
+    console.log("[ManualLogin] Password fill failed:", e.message);
+  }
+}
 
     try {
       await page.click('button[type="submit"], input[type="submit"]');
